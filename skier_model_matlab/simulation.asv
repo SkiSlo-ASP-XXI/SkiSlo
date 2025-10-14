@@ -5,7 +5,7 @@ close all;
 
 %% ----- Interpolante z = h(x,y) -----
 Fz = scatteredInterpolant(pts(:,1), pts(:,2), pts(:,3), 'natural','nearest');
-plotSurface(Fz, meta)
+% plotSurface(Fz, meta)
 
 %% ---- Func. per gradienti e z ----
 h = @(x,y) Fz(x,y);
@@ -25,7 +25,7 @@ x0 = 0; y0 = 8;             % posizione di partenza (sull'area generata)
 z0 = h(x0,y0);
 speed0 = 0.5;                  % velocità iniziale lungo tangente [m/s]
 % direzione iniziale: verso discesa locale 
-beta = deg2rad(20);
+beta = deg2rad(80);
 tangent_dir = [cos(beta); sin(beta)];  % Non tiene conto di z
 tangent_dir = tangent_dir / norm(tangent_dir);
 vx0 = speed0 * tangent_dir(1);
@@ -38,8 +38,9 @@ state0 = [x0; y0; vx0; vy0];
 
 %% ---- integrazione ODE ---
 tspan = [0, 60];  % tempo di simulazione [s]
-options = odeset('RelTol',1e-6,'AbsTol',1e-7);
-[tt, YY] = ode45(@(t, state) odefun(t, state, h, grad_h, alpha, m, g, mu, rho, CdA), ...
+events = @(t,state) skiEvents(t, state, meta);
+options = odeset('RelTol',1e-6,'AbsTol',1e-7, 'Events',events);
+[tt, YY] = ode45(@(t, state) odefun(t, state, h, grad_h, beta, m, g, mu, rho, CdA), ...
                  tspan, state0, options);
 
 % costruisci traiettoria 3D
@@ -72,7 +73,7 @@ xlabel('Tempo [s]'); ylabel('Velocità tangente [m/s]');
 title('Velocità tangente nel tempo');
 grid on;
 
-%% ---- Finestra aggiuntiva: vista libera del terreno e traiettoria ----
+% ---- Finestra aggiuntiva: vista libera del terreno e traiettoria ----
 figure('Name','Vista 3D completa','Position',[200 150 900 700]);
 plotSurface(Fz, meta);
 hold on;
@@ -90,12 +91,11 @@ axis tight; camlight; lighting gouraud; grid on;
 
 %% ---- Funzioni Locali ----
 
-function dst = odefun(~, state, h, grad_h, alpha, m, g, mu, rho, CdA)
+function dst = odefun(~, state, h, grad_h, beta, m, g, mu, rho, CdA)
     % state = [x;y;vx;vy]
     x = state(1); y = state(2); vx = state(3); vy = state(4);
 
     z = h(x,y);
-    ang = alpha(x,y);
     [hx, hy] = grad_h(x,y);  % gradiente alla superficie              
     n_unnorm = [-hx; -hy; 1];  % normale alla superficie
     n = n_unnorm / norm(n_unnorm);
@@ -118,16 +118,37 @@ function dst = odefun(~, state, h, grad_h, alpha, m, g, mu, rho, CdA)
 
     % Proiezione sul piano tangente
     P = eye(3) - n*n.';
-    F_tangent = P * (Fg + F_fric + F_drag);
+    F_tan = P * (Fg + F_fric + F_drag);
 
-    a3 = F_tangent / m;
-    ax = a3(1); ay = a3(2);
+    ubeta = [cos(beta); sin(beta); hx*cos(beta) + hy*sin(beta)];
+    t_beta = ubeta / norm(ubeta);
+    F_beta = (F_tan.' * t_beta) * t_beta;
+
+    a3 = F_beta / m;
+    ax = a3(1); 
+    ay = a3(2);
 
     % Derivata di stato
     dst = [vx;        % dx/dt
            vy;        % dy/dt
            ax;        % dvx/dt
            ay];       % dvy/dt
+end
+
+function [value, isterminal, direction] = skiEvents(~, state, meta)
+    % state = [x;y;vx;vy]
+    x = state(1);  y = state(2);
+
+    % --- condizioni di stop ---
+    % 1) fondo pista: y = L
+    value1 = meta.L - y;      % -> zero quando y = L (poi diventa negativo)
+    % 2) uscita laterale: |x| = W/2
+    value2 = meta.W/2 - abs(x);
+
+    % output eventi (senza la 3: lascia commentato se non ti serve)
+    value      = [value1; value2];         
+    isterminal = [1; 1];                   % ; 1];  % 1 = ferma integrazione
+    direction  = [-1; -1];                 % ; -1]; % zero raggiunto dall'alto
 end
 
 function [hx, hy] = compute_grad_h(Fzfun, xq, yq, eps)
