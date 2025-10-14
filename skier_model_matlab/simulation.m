@@ -38,7 +38,8 @@ state0 = [x0; y0; vx0; vy0];
 
 %% ---- integrazione ODE ---
 tspan = [0, 60];  % tempo di simulazione [s]
-options = odeset('RelTol',1e-6,'AbsTol',1e-7);
+events = @(t,state) skiEvents(t, state, meta);
+options = odeset('RelTol',1e-6,'AbsTol',1e-7, 'Events',events);
 [tt, YY] = ode45(@(t, state) odefun(t, state, h, grad_h, beta, m, g, mu, rho, CdA), ...
                  tspan, state0, options);
 
@@ -132,6 +133,22 @@ function dst = odefun(~, state, h, grad_h, beta, m, g, mu, rho, CdA)
            vy;        % dy/dt
            ax;        % dvx/dt
            ay];       % dvy/dt
+end
+
+function [value, isterminal, direction] = skiEvents(~, state, meta)
+    % state = [x;y;vx;vy]
+    x = state(1);  y = state(2);
+
+    % --- condizioni di stop ---
+    % 1) fondo pista: y = L
+    value1 = meta.L - y;      % -> zero quando y = L (poi diventa negativo)
+    % 2) uscita laterale: |x| = W/2
+    value2 = meta.W/2 - abs(x);
+
+    % output eventi 
+    value      = [value1; value2];        % L'evento scatta quando il valore raggiunge lo 0 
+    isterminal = [1; 1];                   % 1 = ferma integrazione
+    direction  = [-1; -1];                 % zero raggiunto dall'alto
 end
 
 function [hx, hy] = compute_grad_h(Fzfun, xq, yq, eps)
