@@ -69,7 +69,7 @@ for i in range(N):
 
     hx = hx.item()
     hy = hy.item()
-    print(hx, hy)
+   
 
     # Direzione di moto unitizzata
     vx, vy = dx[i], dy[i]
@@ -309,21 +309,70 @@ for i in range(len(s_sol) - 1):
 dv_ds = np.gradient(v_sol, s_sol)
 a_t = v_sol * dv_ds
 
-# Forza netta lungo traiettoria
-F_net_vec = np.zeros_like(s_sol)
+# Vettori per salvare le forze
+F_p_vec        = np.zeros_like(s_sol)
+F_lat_vec      = np.zeros_like(s_sol)
+F_cent_vec     = np.zeros_like(s_sol)
+F_load_vec     = np.zeros_like(s_sol)
+F_drag_vec     = np.zeros_like(s_sol)
+F_fric_vec     = np.zeros_like(s_sol)
+F_net_vec      = np.zeros_like(s_sol)
+
 for i, s_val in enumerate(s_sol):
     w_tmp = w_sol[i]
     v_tmp = np.sqrt(max(w_tmp, 0.0))
-    alpha = alpha_of_s(s_val)
-    beta  = beta_of_s(s_val)
 
+    # Angoli lungo la traiettoria
+    alpha = alpha_of_s(s_val)   # [rad]
+    beta  = beta_of_s(s_val)    # [rad]
+
+    # Peso
     Fg = m * g
+
+    # Normale "di base" (componente perpendicolare al piano)
     Fn = Fg * np.cos(alpha)
+
+    # Componente lungo massima pendenza
     Fs = Fg * np.sin(alpha)
+
+    # Proiezione lungo traiettoria
     F_p = Fs * np.cos(beta)
+
+    # Forza laterale dovuta all'inclinazione rispetto alla fall line
+    F_lat = abs(Fs * np.sin(beta))
+
+    # Raggio di curvatura locale (già definito come R_of_s)
+    R_local = R_of_s(s_val)
+    side = np.sign(beta)  # +1 curva da una parte, -1 dall’altra
+
+    if np.isinf(R_local) or (R_local == 0):
+        F_centrifuga = 0.0
+    else:
+        F_centrifuga = side * m * v_tmp * v_tmp / abs(R_local)
+
+    # Somma laterale totale
+    F_lat_tot = F_lat + F_centrifuga
+
+    # Carico risultante sullo sci
+    F_load = np.sqrt(Fn**2 + F_lat_tot**2)
+
+    # Drag aerodinamico
     F_drag = 0.5 * rho * CdA * v_tmp**2
-    F_fric = mu * Fn
-    F_net_vec[i] = F_p - F_drag - F_fric
+
+    # Attrito neve (usando F_load, come nell'ODE)
+    F_fric = mu * F_load
+
+    # Forza netta lungo traiettoria (coerente con ode_w)
+    F_net = F_p - F_drag - F_fric
+
+    # Salvo tutto
+    F_p_vec[i]    = F_p
+    F_lat_vec[i]  = F_lat
+    F_cent_vec[i] = F_centrifuga
+    F_load_vec[i] = F_load
+    F_drag_vec[i] = F_drag
+    F_fric_vec[i] = F_fric
+    F_net_vec[i]  = F_net
 
 # Alpha e Beta sui punti s_sol
 alpha_rad_sol = alpha_of_s(s_sol)
@@ -338,6 +387,7 @@ z_eff = np.interp(s_sol, s, z_traj)
 
 # Energia meccanica: E = T + V = 1/2 m v^2 + m g z
 E_mech = 0.5 * m * v_sol**2 + m * g * z_eff
+
 
 # ===============================
 # 9. Plot – finestre separate
@@ -396,6 +446,24 @@ plt.title('Energia meccanica lungo la traiettoria')
 plt.xlabel('s [m]')
 plt.ylabel('E_mech [J]')
 plt.grid(True)
+
+# ---- 6) Forza laterale ----
+plt.figure(figsize=(6, 4))
+plt.plot(s_sol, F_lat_vec, 'b-', lw=2)
+plt.title('Forza laterale F_lat')
+plt.xlabel('s [m]')
+plt.ylabel('F_lat [N]')
+plt.grid(True)
+
+# ---- 7) Forza centrifuga ----
+plt.figure(figsize=(6, 4))
+plt.plot(s_sol, F_cent_vec, 'r-', lw=2)
+plt.title('Forza centrifuga F_centr')
+plt.xlabel('s [m]')
+plt.ylabel('F_centr [N]')
+plt.grid(True)
+
+
 
 # ---- 7) Superficie + traiettoria ----
 fig = plt.figure(figsize=(7, 6))
