@@ -45,8 +45,10 @@ def genera_superficie(
     y_grid = np.linspace(0.0, L, ny)
     Xg, Yg = np.meshgrid(x_grid, y_grid)  # shape (ny, nx)
 
+
     # Piano base (pendenza costante lungo y)
-    Z_base = -pendenza_target * Yg
+    Z_base = pendenza_target * L - pendenza_target * Yg # => Z(0) = pendenza_target*L, Z(L) = 0
+
 
     # Sovrastruttura a seconda del tipo
     if kind == "plane":

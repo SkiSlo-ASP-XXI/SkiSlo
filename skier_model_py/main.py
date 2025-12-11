@@ -69,24 +69,38 @@ for i in range(N):
 
     hx = hx.item()
     hy = hy.item()
+    print(hx, hy)
 
-    # Alpha: pendenza del terreno
-    alpha_rad = np.arctan(np.sqrt(hx**2 + hy**2))
+    # Direzione di moto unitizzata
+    vx, vy = dx[i], dy[i]
+    norm_v = np.hypot(vx, vy)
+    ux, uy = vx / norm_v, vy / norm_v
+
+    # Derivata della quota lungo la direzione di moto
+    #dh_ds = hx * ux + hy * uy    # QUI compare il segno! fondamentale -> PER ORA NON FACCIAMO LA DERIVATA NELLA DIR DI MODO MA LUNGO LA DIREZIONE Y 
+
+    # Angolo di pendenza con segno
+    alpha_rad = -np.arctan(hy)
     alpha_deg[i] = np.degrees(alpha_rad)
 
     # Beta: angolo tra direzione di moto e linea di massima pendenza
-    vec_v = np.array([dx[i], dy[i]])          # direzione traiettoria sul piano orizzontale
-    vec_fall = np.array([-hx, -hy])           # verso massima discesa (opposto gradiente)
+    vec_v  = np.array([dx[i], dy[i]])
+    vec_ref = np.array([0.0, 1.0])
 
-    num = np.dot(vec_v, vec_fall)
-    den = np.linalg.norm(vec_v) * np.linalg.norm(vec_fall)
+    num = np.dot(vec_v, vec_ref)
+    den = np.linalg.norm(vec_v) * np.linalg.norm(vec_ref)
 
     if den < 1e-9:
-        beta_deg[i] = 0.0
+        beta_mag_deg = 0.0
     else:
-        # Clamp dell'argomento dell'arccos per evitare problemi numerici
         cosang = np.clip(num / den, -1.0, 1.0)
-        beta_deg[i] = np.degrees(np.arccos(cosang))
+        beta_mag_deg = np.degrees(np.arccos(cosang))   # modulo dell'angolo
+
+    # SEGNO: vec_ref = (0, -1) ⇒ sign(beta) = -sign(vx)
+    sign_beta = np.sign(dx[i])   # dx[i] è vx
+
+    beta_deg[i] = sign_beta * beta_mag_deg       #BETA ANGOLO RISPETTO ALLA VERTICALE !!!!
+
 
 # Convertiamo subito in radianti e costruiamo interpolanti in s
 alpha_rad_arr = np.radians(alpha_deg)
@@ -362,7 +376,7 @@ plt.axhline(np.degrees(np.arctan(pendenza_target)),
 plt.title('Alpha: pendenza terreno lungo traiettoria')
 plt.xlabel('s [m]')
 plt.ylabel('Alpha [°]')
-plt.ylim([0, 20])
+plt.ylim([-20, 20])
 plt.grid(True)
 plt.legend()
 
@@ -401,6 +415,8 @@ ax.set_title('Superficie + Traiettoria percorsa')
 ax.set_xlabel('X')
 ax.set_ylabel('Y')
 ax.set_zlabel('Z')
+ax.invert_xaxis()
+
 ax.legend()
 plt.tight_layout()
 plt.show()
