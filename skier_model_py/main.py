@@ -33,9 +33,18 @@ x_grid, y_grid, Xg, Yg, Zg, h = genera_superficie(
 # 2. Traiettoria sciatore
 # ===============================
 t = np.linspace(0.0, L, 300)      # parametro lungo la pista
+#y_traj = t
+#x_traj = 10.0 * np.sin(t / 2.0)
+#z_traj = h(x_traj, y_traj)
+L_total = L  # lunghezza totale del parametro
+
+num_curves = 3   # numero di curve che vuoi
+x_amp = 10.0     # ampiezza laterale delle curve
+
 y_traj = t
-x_traj = 10.0 * np.sin(t / 2.0)
+x_traj = x_amp * np.sin(num_curves * np.pi * t / L_total)
 z_traj = h(x_traj, y_traj)
+
 
 # Calcolo s (ascissa curvilinea)
 dx_ds_approx = np.gradient(x_traj)
@@ -160,8 +169,8 @@ def make_safe_interp1d(x, y, kind="linear"):
         x,
         y,
         kind=kind,
-        bounds_error=False,             # niente errori fuori range
-        fill_value=(y[0], y[-1])        # fuori range → blocco al bordo
+        bounds_error=False,             
+        fill_value=(y[0], y[-1])        
     )
 
     def safe_f(x_new):
@@ -217,7 +226,7 @@ def ode_w(s_val, w):
     # Raggio di curvatura nel punto corrente
     R_local = R_of_s(s_val)
 
-    # Forza centrifuga (in realtà centripeta, ma appare così nel riferimento dello sciatore)
+    # Forza centrifuga
     side = np.sign(beta)  # +1 curva da una parte, -1 curva dall’altra
 
     if np.isinf(R_local) or (R_local == 0):
@@ -276,8 +285,8 @@ sol = solve_ivp(
     s_span,
     [w0],
     events=stop_event,
-    t_eval=s,          # valutiamo esattamente agli stessi punti s
-    method='RK45',     # va benissimo per iniziare
+    t_eval=s,          
+    method='RK45',    
     rtol=1e-6,
     atol=1e-9
 )
