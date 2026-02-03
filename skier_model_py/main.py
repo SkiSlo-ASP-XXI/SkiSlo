@@ -131,21 +131,31 @@ for i in range(1, Npts - 1):
     p      = P[i]
     p_next = P[i + 1]
 
+    v1 = p - p_prev
+    v2 = p_next - p
+
     # Lati del triangolo
     a = np.linalg.norm(p_prev - p)
     b = np.linalg.norm(p - p_next)
     c = np.linalg.norm(p_next - p_prev)
 
+    cross = v1[0]*v2[1] - v1[1]*v2[0]
+
+    area = 0.5 * abs(cross)
+
     # Area del triangolo (formula di Erone)
     s_semi = 0.5 * (a + b + c)
     area_sq = s_semi * (s_semi - a) * (s_semi - b) * (s_semi - c)
 
-    if area_sq <= 1e-16:
+    if area <= 1e-16:
         R_vals[i] = np.inf
     else:
-        area = np.sqrt(area_sq)
-        curvature_i = 4.0 * area / (a * b * c)
-        R_vals[i] = 1.0 / curvature_i
+        curvature = 4.0 * area / (a * b * c)
+
+        sign = np.sign(cross)   
+        curvature *= sign
+
+        R_vals[i] = 1.0 / curvature
 
 # Interpolante R(s)
 def make_safe_interp1d(x, y, kind="linear"):
@@ -227,7 +237,7 @@ def ode_w(s_val, w):
     R_local = R_of_s(s_val)
 
     # Forza centrifuga
-    side = np.sign(beta)  # +1 curva da una parte, -1 curva dall’altra
+    side = np.sign(R_local)  # +1 curva da una parte, -1 curva dall’altra
 
     if np.isinf(R_local) or (R_local == 0):
         F_centrifuga = 0.0
