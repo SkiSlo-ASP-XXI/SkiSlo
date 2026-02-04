@@ -143,10 +143,6 @@ for i in range(1, Npts - 1):
 
     area = 0.5 * abs(cross)
 
-    # Area del triangolo (formula di Erone)
-    s_semi = 0.5 * (a + b + c)
-    area_sq = s_semi * (s_semi - a) * (s_semi - b) * (s_semi - c)
-
     if area <= 1e-16:
         R_vals[i] = np.inf
     else:
@@ -237,12 +233,12 @@ def ode_w(s_val, w):
     R_local = R_of_s(s_val)
 
     # Forza centrifuga
-    side = np.sign(R_local)  # +1 curva da una parte, -1 curva dall’altra
+    #side = np.sign(R_local)  # +1 curva da una parte, -1 curva dall’altra
 
     if np.isinf(R_local) or (R_local == 0):
         F_centrifuga = 0.0
     else:
-        F_centrifuga = side * m * v * v / abs(R_local)
+        F_centrifuga = m * v * v / R_local
 
 
     # Normale totale (gravità + curvatura)
@@ -362,12 +358,12 @@ for i, s_val in enumerate(s_sol):
 
     # Raggio di curvatura locale (già definito come R_of_s)
     R_local = R_of_s(s_val)
-    side = np.sign(beta)  # +1 curva da una parte, -1 dall’altra
+    # side = np.sign(beta)  # +1 curva da una parte, -1 dall’altra
 
     if np.isinf(R_local) or (R_local == 0):
         F_centrifuga = 0.0
     else:
-        F_centrifuga = side * m * v_tmp * v_tmp / abs(R_local)
+        F_centrifuga = m * v_tmp * v_tmp / R_local
 
     # Somma laterale totale
     F_lat_tot = F_lat + F_centrifuga
