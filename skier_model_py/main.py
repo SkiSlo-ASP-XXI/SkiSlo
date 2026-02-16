@@ -12,38 +12,44 @@ warnings.filterwarnings("error")
 # ===============================
 from geometry import genera_superficie
 
-L = 100.0
-W = 20.0
-nx = 50
-ny = 100
-pendenza_target = 0.2
+#L = 100.0
+#W = 20.0
+#nx = 50
+#ny = 100
+#pendenza_target = 0.2
 
 # Esempio 1: piano puro
-x_grid, y_grid, Xg, Yg, Zg, h = genera_superficie(
-    L=L,
-    W=W,
-    nx=nx,
-    ny=ny,
-    kind="plane",
-    pendenza_target=pendenza_target
-)
+#x_grid, y_grid, Xg, Yg, Zg, h = genera_superficie(
+#    L=L,
+#    W=W,
+#    nx=nx,
+#    ny=ny,
+#    kind="plane",
+#    pendenza_target=pendenza_target
+#)
 
 
 # ===============================
 # 2. Traiettoria sciatore
 # ===============================
-t = np.linspace(0.0, L, 300)      # parametro lungo la pista
+#t = np.linspace(0.0, L, 300)      # parametro lungo la pista
 #y_traj = t
 #x_traj = 10.0 * np.sin(t / 2.0)
 #z_traj = h(x_traj, y_traj)
-L_total = L  # lunghezza totale del parametro
+#L_total = L  # lunghezza totale del parametro
 
-num_curves = 3   # numero di curve che vuoi
-x_amp = 10.0     # ampiezza laterale delle curve
+#num_curves = 3   # numero di curve che vuoi
+#x_amp = 10.0     # ampiezza laterale delle curve
 
-y_traj = t
-x_traj = x_amp * np.sin(num_curves * np.pi * t / L_total)
-z_traj = h(x_traj, y_traj)
+#y_traj = t
+#x_traj = x_amp * np.sin(num_curves * np.pi * t / L_total)
+#z_traj = h(x_traj, y_traj)
+
+data = np.loadtxt("x_cdm.csv", delimiter=",", skiprows=1)
+x_traj = data[:, 1]
+y_traj = data[:, 2]
+z_traj = data[:, 3]
+z_traj = z_traj - z_traj[-1]
 
 
 # Calcolo s (ascissa curvilinea)
@@ -71,14 +77,16 @@ for i in range(N):
     yi = y_traj[i]
 
     # Gradiente numerico della superficie
-    hx = (h(np.array([xi + delta]), np.array([yi])) -
-          h(np.array([xi - delta]), np.array([yi]))) / (2.0 * delta)
-    hy = (h(np.array([xi]), np.array([yi + delta])) -
-          h(np.array([xi]), np.array([yi - delta]))) / (2.0 * delta)
+    #hx = (h(np.array([xi + delta]), np.array([yi])) -
+    #      h(np.array([xi - delta]), np.array([yi]))) / (2.0 * delta)
+    #hy = (h(np.array([xi]), np.array([yi + delta])) -
+    #     h(np.array([xi]), np.array([yi - delta]))) / (2.0 * delta)
+    
 
-    hx = hx.item()
-    hy = hy.item()
-   
+    #hx = hx.item()
+    #hy = hy.item()
+
+    #Gradiente provvisorio
 
     # Direzione di moto unitizzata
     vx, vy = dx[i], dy[i]
@@ -89,12 +97,17 @@ for i in range(N):
     #dh_ds = hx * ux + hy * uy    # QUI compare il segno! fondamentale -> PER ORA NON FACCIAMO LA DERIVATA NELLA DIR DI MODO MA LUNGO LA DIREZIONE Y 
 
     # Angolo di pendenza con segno
-    alpha_rad = -np.arctan(hy)
+    #alpha_rad = -np.arctan(hy)
+    alpha_rad = -np.arctan(dz_ds_approx[i])
     alpha_deg[i] = np.degrees(alpha_rad)
 
     # Beta: angolo tra direzione di moto e linea di massima pendenza
     vec_v  = np.array([dx[i], dy[i]])
-    vec_ref = np.array([0.0, 1.0])
+    vec_ref = np.array([
+    x_traj[-1] - x_traj[0],
+    y_traj[-1] - y_traj[0]
+    ])
+    #vec_ref = np.array([0.0, 1.0])
 
     num = np.dot(vec_v, vec_ref)
     den = np.linalg.norm(vec_v) * np.linalg.norm(vec_ref)
@@ -281,7 +294,7 @@ stop_event.direction = -1       # ci interessa quando w scende verso 0
 # ===============================
 # 6. Integrazione con solve_ivp
 # ===============================
-v0 = 5.0      # condizione iniziale (m/s)
+v0 = 40.0      # condizione iniziale (m/s)
 w0 = v0**2
 
 s_span = (float(s[0]), float(s[-1]))
@@ -436,14 +449,14 @@ plt.grid(True)
 # ---- 4) Pendenza (Alpha) ----
 plt.figure(figsize=(6, 4))
 plt.plot(s_sol, alpha_deg_sol, 'b-', lw=2)
-plt.axhline(np.degrees(np.arctan(pendenza_target)),
-            color='r', linestyle='--', label='Teorico piano')
+#plt.axhline(np.degrees(np.arctan(pendenza_target)),
+#            color='r', linestyle='--', label='Teorico piano')
 plt.title('Alpha: pendenza terreno lungo traiettoria')
 plt.xlabel('s [m]')
 plt.ylabel('Alpha [°]')
 plt.ylim([-20, 20])
 plt.grid(True)
-plt.legend()
+#plt.legend()
 
 # ---- 5) Angolo Beta ----
 plt.figure(figsize=(6, 4))
@@ -483,7 +496,18 @@ plt.grid(True)
 # ---- 7) Superficie + traiettoria ----
 fig = plt.figure(figsize=(7, 6))
 ax = fig.add_subplot(111, projection='3d')
-ax.plot_surface(Xg, Yg, Zg, alpha=0.4, edgecolor='none')
+#ax.plot_surface(Xg, Yg, Zg, alpha=0.4, edgecolor='none')
+
+
+#RAGGIO DI CURVATURA
+mask = np.isfinite(R_vals)
+
+plt.figure(figsize=(7,4))
+plt.plot(s[mask], R_vals[mask], lw=2)
+plt.xlabel('Ascissa curvilinea s')
+plt.ylabel('Raggio di curvatura R')
+plt.title('R(s) - raggio di curvatura')
+plt.grid(True)
 
 # Traiettoria teorica (completa)
 ax.plot(x_traj, y_traj, z_traj, 'r', lw=2, label="Traiettoria definita")
@@ -500,9 +524,12 @@ ax.set_ylabel('Y')
 ax.set_zlabel('Z')
 ax.invert_xaxis()
 
+
 ax.legend()
 plt.tight_layout()
 plt.show()
+
+
 
 
 
