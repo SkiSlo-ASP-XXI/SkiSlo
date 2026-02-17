@@ -139,7 +139,7 @@ R_of_s = interp1d(s, R_vals, kind="linear")
 #==========================================
 m = 80
 g = 9.81
-mu = 0.05
+mu = 0.17
 rho = 1.225
 CdA = 0.3
 
@@ -207,7 +207,7 @@ stop_event.direction = -1   # ci interessa quando w scende verso 0
 # =========================================
 # INTEGRAZIONE
 # =========================================
-v0 = 40.0      # condizione iniziale (m/s)
+v0 = 7.4      # condizione iniziale (m/s)
 w0 = v0**2
 
 s_span = (float(s[0]), float(s[-1]))
