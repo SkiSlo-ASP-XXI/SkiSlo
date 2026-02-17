@@ -22,9 +22,10 @@ y_traj = pos[:, 1]
 z_traj = pos[:, 2]
 
 #Calcolo ascissa curvilinea
-dx_dt = np.gradient(x_traj)
-dy_dt = np.gradient(y_traj)
-dz_dt = np.gradient(z_traj)
+dt = 0.5 # GIULIA CONTROLLA PER CAPIRE SE VA BENE  -> GIULIA LO DEVI SISTEMARE
+dx_dt = np.gradient(x_traj, dt)
+dy_dt = np.gradient(y_traj, dt)
+dz_dt = np.gradient(z_traj, dt)
 ds = np.sqrt(dx_dt**2 + dy_dt**2 + dz_dt**2)
 s = np.cumsum(ds)
 
@@ -139,7 +140,7 @@ R_of_s = interp1d(s, R_vals, kind="linear")
 #==========================================
 m = 80
 g = 9.81
-mu = 0.17
+mu = 0.19
 rho = 1.225
 CdA = 0.3
 
@@ -155,6 +156,7 @@ def func_ode(s_val, w):
     w: array di lunghezza 1 (v^2)
     """
     w = w[0]
+    w = max(w, 0.0)
     v = np.sqrt(w)
 
     alpha = alpha_of_s(s_val) #pendenza terreno
