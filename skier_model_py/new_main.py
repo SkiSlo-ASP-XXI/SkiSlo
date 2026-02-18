@@ -15,19 +15,30 @@ warnings.filterwarnings("error")
 hdf5_file = 'segment_81222.h5' 
 with h5py.File(hdf5_file, 'r') as data:
     pos = data['processed/com/pos'][:, :]
+    ts_com = data['processed/com/timestamp'][:]
+    pos_offset = data['processed/com/pos_offset'][:]
 
-pos = pos[1200:]
+pos += pos_offset
+
+s = 1200
+pos = pos[s:]
 x_traj = pos[:, 0]
 y_traj = pos[:, 1]
 z_traj = pos[:, 2]
 
+ts_com = ts_com[s:]
+ts_com -= ts_com[0]
+
+
 #Calcolo ascissa curvilinea
-dt = 0.5 # GIULIA CONTROLLA PER CAPIRE SE VA BENE  -> GIULIA LO DEVI SISTEMARE
-dx_dt = np.gradient(x_traj, dt)
-dy_dt = np.gradient(y_traj, dt)
-dz_dt = np.gradient(z_traj, dt)
-ds = np.sqrt(dx_dt**2 + dy_dt**2 + dz_dt**2)
+dt = np.diff(ts_com)
+dx_dt = np.gradient(x_traj, ts_com)
+dy_dt = np.gradient(y_traj, ts_com)
+dz_dt = np.gradient(z_traj, ts_com)
+ds = np.sqrt(dx_dt**2 + dy_dt**2 + dz_dt**2)[1:]*dt
+
 s = np.cumsum(ds)
+s = np.concatenate(([0], s))
 
 #===========================================
 # CALCOLO DI ALPHA E BETA
@@ -140,7 +151,7 @@ R_of_s = interp1d(s, R_vals, kind="linear")
 #==========================================
 m = 80
 g = 9.81
-mu = 0.19
+mu = 0.16
 rho = 1.225
 CdA = 0.3
 
@@ -209,7 +220,7 @@ stop_event.direction = -1   # ci interessa quando w scende verso 0
 # =========================================
 # INTEGRAZIONE
 # =========================================
-v0 = 7.4      # condizione iniziale (m/s)
+v0 = 4.91      # condizione iniziale (m/s)
 w0 = v0**2
 
 s_span = (float(s[0]), float(s[-1]))
