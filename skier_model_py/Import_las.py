@@ -6,7 +6,7 @@ import pyvista as pv
 
 #using pyvista
 
-las = laspy.read("segment.las")
+las = laspy.read("output.las")
 points = np.vstack((las.x,las.y,las.z)).T
 cloud = pv.PolyData(points)
 cloud['Elevation'] = points[:,2]
@@ -65,16 +65,16 @@ pcd.points = o3d.utility.Vector3dVector(points)
 
 print("New centroid (X,Y):", np.asarray(pcd.points).mean(axis=0)[:2])
 
-o3d.visualization.draw_geometries([pcd])
+#o3d.visualization.draw_geometries([pcd]) -> elimino visualizzazione
 print("Points imported")
 print("Downsample the point cloud with a voxel of 0.05")
 downpcd = pcd.voxel_down_sample(voxel_size=1)
-o3d.visualization.draw_geometries([downpcd])
+#o3d.visualization.draw_geometries([downpcd])
 
 print("Recompute the normal of the downsampled point cloud")
 downpcd.estimate_normals(
     search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=5, max_nn=30))
-o3d.visualization.draw_geometries([downpcd], point_show_normal=True)
+#o3d.visualization.draw_geometries([downpcd], point_show_normal=True)
 min_bound = pcd.get_min_bound()  # [x_min, y_min, z_min]
 max_bound = pcd.get_max_bound()  # [x_max, y_max, z_max]
 
