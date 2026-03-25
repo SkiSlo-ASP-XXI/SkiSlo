@@ -104,7 +104,11 @@ class trajectoryLoader():
         # 1 degree of latitude is roughly 111.320 km and 1 degree of longitude is roughly 111.320*cos(latitude) km, so we can convert the noise from meters to degrees by dividing by these factors.
         
         # What do we do here:
-        # We create the noise 
+        # We create the noise vector as a pareto distribution independent for the latitude and longitude
+        # We min max scale it in the range [0,1] independently by column
+        # We then multiply it by the sign vector to determine the shift side, we then use the maxDistance to scale the shift and then use the normalization by the curvature of the earth
+        # according to what has been previously discusses
+        # then we add the noise to the gates and store it accordingly 
         for _ in range(numTrajectories):    
             noise = np.random.pareto(a=3, size=(signs.shape[0], 2)) 
             noise[1:-1, :] = (noise[1:-1, :] - noise[1:-1, :].min(axis=0)) / noise[1:-1, :].max(axis=0)   # Apply alternating signs to the noise, excluding fake gates
@@ -128,7 +132,7 @@ class trajectoryLoader():
             saveName = saveName.split(".csv")[0]
 
         for i, trajectory in enumerate(trajectories, start=1):
-            trajectory.to_csv(os.path.join(self.__picturesSavePath, f"{saveName}_trajectory_{i}.csv"), index=False)
+            trajectory.to_csv(os.path.join(self.__picturesSavePath, f"{saveName}_trajectory_{i}.csv"), index=True)
 
 
 
