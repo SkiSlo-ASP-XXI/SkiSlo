@@ -14,6 +14,7 @@ class trajectoryLoader():
         os.makedirs(picturesSavePath, exist_ok=True)
         self.__picturesSavePath = picturesSavePath
         self.__gates = pd.read_csv(path, sep=";", header=0, index_col=0)[self.VALID_NAMES] 
+        self.__addFakeInitialAndFinalGates()  # Add fake gates to the trajectory for better interpolation and visualization
 
     @property
     def gates(self) -> pd.DataFrame:
@@ -132,7 +133,7 @@ class trajectoryLoader():
             saveName = saveName.split(".csv")[0]
 
         for i, trajectory in enumerate(trajectories, start=1):
-            trajectory.to_csv(os.path.join(self.__picturesSavePath, f"{saveName}_trajectory_{i}.csv"), index=True)
+            trajectory.to_csv(os.path.join(saveName, f"_trajectory_{i}.csv"), index=True, index_label="Gate")
 
 
 
@@ -141,9 +142,7 @@ class trajectoryLoader():
         """Visualizes the trajectory by creating a map with markers for each gate, including the fake initial and final gates, and saves the map as an HTML file.
         The method uses the Folium library to create an interactive map centered around the average latitude and longitude of the gates, with a zoom level of 30. Each gate is represented as a marker
         with a popup displaying the orthometric height (Quota Orto. [m]). The fake initial and final gates are highlighted with yellow markers, while the other gates are marked with default markers."""
-        if "." in filename:
-            assert filename.endswith(".html"), "The filename must end with .html extension."
-        else:
+        if not filename.endswith(".html"):
             filename = filename + ".html"
 
         folium_map = folium.Map(location=[self.__gates['WGS84_Lat2'].mean(), self.__gates['WGS84_Lon2'].mean()], zoom_start=20)
@@ -207,7 +206,6 @@ class trajectoryLoader():
             saveName (str): The name of the file to save the plot as an HTML file. If the name does not end with '.html', the method will automatically append the '.html' extension to the filename.
         """
         if "." in saveName:
-            assert saveName.endswith(".html"), "The filename must end with .html extension."
             saveName = saveName.split(".html")[0]
 
 
@@ -225,7 +223,7 @@ class trajectoryLoader():
                 folium.CircleMarker(location=[point['WGS84_Lat2'], point['WGS84_Lon2']], popup=f"Quota: {point['Quota Orto. [m]']} m", 
                         radius=1, color="blue", fill=True, fill_color="blue").add_to(folium_map)
 
-            folium_map.save(os.path.join(self.__picturesSavePath, f"{saveName}_trajectory_{i}.html"))
+            folium_map.save(os.path.join(saveName, f"_trajectory_{i}.html"))
 
 
 if __name__ == "__main__":
@@ -248,8 +246,11 @@ if __name__ == "__main__":
         t.plotAll(args.plotInterpolatedTrajectoryPath, args.plotInterpolatedTrajectoryPath.split(".html")[0] + "_with_gates.html")
 
     if args.simulatedTrajectoriesPath and args.numTrajectories > 0:
+        os.makedirs(args.simulatedTrajectoriesPath, exist_ok=True)
         newTraj = t.generateNewTrajectories(numTrajectories=args.numTrajectories, maxDistanceMeters=args.maxDistanceMeters, startLeft=args.startLeft)
         t.plotSimulatedTrajectories(newTraj, args.simulatedTrajectoriesPath)
+        os.makedirs(os.path.join(args.simulatedTrajectoriesPath, "simulated_trajectories"), exist_ok=True)
+        t.saveNewTrajectories(newTraj, os.path.join(args.simulatedTrajectoriesPath, "simulated_trajectories.csv"))
     
 
 
