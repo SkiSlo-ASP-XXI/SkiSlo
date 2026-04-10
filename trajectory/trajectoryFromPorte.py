@@ -114,6 +114,7 @@ class trajectoryLoader():
             noise = np.random.pareto(a=3, size=(signs.shape[0], 2)) 
             noise[1:-1, :] = (noise[1:-1, :] - noise[1:-1, :].min(axis=0)) / noise[1:-1, :].max(axis=0)   # Apply alternating signs to the noise, excluding fake gates
             noise[1:-1, :] *= signs[1:-1, :] * maxDistanceMeters / np.array([111320, 111320 * np.cos(np.radians(self.__gates['WGS84_Lat2'].mean()))])  # Scale the noise to the desired maximum distance in meters, converting from meters to degrees, excluding fake gates
+            noise[[0, -1], :] = 0  # No noise for the fake initial and final gates
             gates = self.__gates.copy()
             gates[['WGS84_Lat2', 'WGS84_Lon2']] += noise  # Add noise to the gate positions
             trajectories.append(gates[['WGS84_Lat2', 'WGS84_Lon2', 'Quota Orto. [m]']])  # Prepare the trajectory with the new noisy gates and add it to the list of trajectories
@@ -166,9 +167,7 @@ class trajectoryLoader():
             data (str): The file path to the JSON file containing the original GNSS data, which should have a structure where 'gnss_data' contains 'lat' and 'lon' lists representing the latitude and longitude of the GNSS points, respectively.
             saveName (str): The name of the HTML file to save the plot. If the name does not end with '.html', the method will automatically append the '.html' extension to the filename.
         """
-        if "." in saveName:
-            assert saveName.endswith(".html"), "The filename must end with .html extension."
-        else:
+        if not saveName.endswith(".html"):
             saveName = saveName + ".html"
 
         folium_map = folium.Map(location=[self.__gates['WGS84_Lat2'].mean(), self.__gates['WGS84_Lon2'].mean()], zoom_start=20)
@@ -222,6 +221,18 @@ class trajectoryLoader():
             for _, point in trajectory.iterrows():
                 folium.CircleMarker(location=[point['WGS84_Lat2'], point['WGS84_Lon2']], popup=f"Quota: {point['Quota Orto. [m]']} m", 
                         radius=1, color="blue", fill=True, fill_color="blue").add_to(folium_map)
+                
+
+            # Prints the original trajectory on the same map for comparison
+            for _, point in self.prepareTrajectories().iterrows():
+                folium.CircleMarker(location=[point['WGS84_Lat2'], point['WGS84_Lon2']], popup=f"Quota: {point['Quota Orto. [m]']} m", 
+                        radius=1, color="black", fill=True, fill_color="black").add_to(folium_map)
+                
+            # Prints the new trajectory on the same map for comparison
+            for _, point in self.prepareTrajectories(gates=trajectory).iterrows():
+                folium.CircleMarker(location=[point['WGS84_Lat2'], point['WGS84_Lon2']], popup=f"Quota: {point['Quota Orto. [m]']} m", 
+                        radius=1, color="orange", fill=True, fill_color="green").add_to(folium_map)
+
 
             folium_map.save(os.path.join(saveName, f"_trajectory_{i}.html"))
 
