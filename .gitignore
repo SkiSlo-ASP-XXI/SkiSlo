@@ -1,3 +1,4 @@
 *.asv
 .venv
+.myvenv
 __pycache__/
