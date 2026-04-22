@@ -3,7 +3,7 @@ import folium
 import pandas as pd
 import numpy as np
 import argparse
-
+from pyproj import Transformer
 
 from scipy.interpolate import make_splprep
 
@@ -13,7 +13,13 @@ class trajectoryLoader():
     def __init__(self, path:str, picturesSavePath:str="./figures")->None:
         os.makedirs(picturesSavePath, exist_ok=True)
         self.__picturesSavePath = picturesSavePath
+        
         self.__gates = pd.read_csv(path, sep=";", header=0, index_col=0)[self.VALID_NAMES] 
+        
+        # Coordinate transformers for converting between UTM (Universal Transverse Mercator) and WGS84 (World Geodetic System 1984) coordinate systems.
+        self.__transformer_UTM_to_WGS84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)  # Transformer for converting from UTM to WGS84 coordinates
+        self.__transformer_WGS84_to_UTM = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)  # Transformer for converting from WGS84 to UTM coordinates
+        
         self.__addFakeInitialAndFinalGates()  # Add fake gates to the trajectory for better interpolation and visualization
 
     @property
@@ -32,7 +38,11 @@ class trajectoryLoader():
         
         This method modifies the internal gates DataFrame by adding two new rows: 'fakeInit' and 'fakeFinal', which represent the extended initial and final gates, respectively.
         """
-        idx = self.__gates.columns.get_indexer(['WGS84_Lat2', 'WGS84_Lon2', 'Quota Orto. [m]'])
+        # idx = self.__gates.columns.get_indexer(['WGS84_Lat2', 'WGS84_Lon2', 'Quota Orto. [m]'])
+        idx = self.__gates.columns.get_indexer(['Nord [m]', 'Est [m]', 'Quota Orto. [m]'])
+        wgs84_idx = self.__gates.columns.get_indexer(['WGS84_Lat2', 'WGS84_Lon2'])
+        
+        #idx = self.__gates.columns.get_indexer(trajectoryLoader.VALID_NAMES)
 
         distance_max_meter = max(map(lambda x: np.linalg.norm(x[0][idx] - x[1][idx]), zip(self.__gates.iloc[:-1].values, self.__gates.iloc[1:].values)))
 
@@ -44,6 +54,10 @@ class trajectoryLoader():
         new_initial_gate.iloc[idx] -= direction_vector * distance_max_meter
         new_final_gate.iloc[idx] += direction_vector * distance_max_meter
 
+        # WGS84 coordinates for the fake gates are calculated by converting the Nord and Est coordinates back to latitude and longitude using the average latitude of the existing gates for accurate conversion.
+        new_initial_gate.iloc[wgs84_idx] = self.__transformer_UTM_to_WGS84.transform(new_initial_gate['Est [m]'], new_initial_gate['Nord [m]'])[::-1]
+        new_final_gate.iloc[wgs84_idx] = self.__transformer_UTM_to_WGS84.transform(new_final_gate['Est [m]'], new_final_gate['Nord [m]'])[::-1]
+        
         self.__gates = pd.concat([pd.DataFrame([new_initial_gate], columns=self.__gates.columns, index=['fakeInit']), self.__gates, pd.DataFrame([new_final_gate], columns=self.__gates.columns, index=['fakeFinal'])])
 
         
@@ -113,11 +127,13 @@ class trajectoryLoader():
         for _ in range(numTrajectories):    
             noise = np.random.pareto(a=3, size=(signs.shape[0], 2)) 
             noise[1:-1, :] = (noise[1:-1, :] - noise[1:-1, :].min(axis=0)) / noise[1:-1, :].max(axis=0)   # Apply alternating signs to the noise, excluding fake gates
-            noise[1:-1, :] *= signs[1:-1, :] * maxDistanceMeters / np.array([111320, 111320 * np.cos(np.radians(self.__gates['WGS84_Lat2'].mean()))])  # Scale the noise to the desired maximum distance in meters, converting from meters to degrees, excluding fake gates
+            noise[1:-1, :] = noise[1:-1, :] * signs[1:-1, :] * maxDistanceMeters #/ np.array([111320, 111320 * np.cos(np.radians(self.__gates['WGS84_Lat2'].mean()))])  # Scale the noise to the desired maximum distance in meters, converting from meters to degrees, excluding fake gates
             noise[[0, -1], :] = 0  # No noise for the fake initial and final gates
             gates = self.__gates.copy()
-            gates[['WGS84_Lat2', 'WGS84_Lon2']] += noise  # Add noise to the gate positions
-            trajectories.append(gates[['WGS84_Lat2', 'WGS84_Lon2', 'Quota Orto. [m]']])  # Prepare the trajectory with the new noisy gates and add it to the list of trajectories
+            gates[['Nord [m]', 'Est [m]']] += noise  # Add noise to the gate positions
+            gates[['WGS84_Lat2', 'WGS84_Lon2']] += noise / np.array([111320, 111320 * np.cos(np.radians(self.__gates['WGS84_Lat2'].mean()))])  # Convert noise from meters to degrees for latitude and longitude    
+
+            trajectories.append(gates)  # Prepare the trajectory with the new noisy gates and add it to the list of trajectories
 
         return trajectories
     
@@ -129,12 +145,12 @@ class trajectoryLoader():
             trajectories (list[pd.DataFrame]): A list of DataFrames, where each DataFrame contains the points of a generated trajectory in the format [WGS84_Lat2, WGS84_Lon2, Quota Orto. [m]].
             saveName (str): The name of the CSV file to save the trajectories. If the name does not end with '.csv', the method will automatically append the '.csv' extension to the filename.
         """
-        if "." in saveName:
-            assert saveName.endswith(".csv"), "The filename must end with .csv extension."
+        if "." in saveName or saveName.endswith(".csv"):
             saveName = saveName.split(".csv")[0]
 
         for i, trajectory in enumerate(trajectories, start=1):
-            trajectory.to_csv(os.path.join(saveName, f"_trajectory_{i}.csv"), index=True, index_label="Gate")
+            trajectory.to_csv(os.path.join(saveName, f"trajectory_{i}.csv"), index=True, index_label="Gate")
+
 
 
 
@@ -144,7 +160,7 @@ class trajectoryLoader():
         The method uses the Folium library to create an interactive map centered around the average latitude and longitude of the gates, with a zoom level of 30. Each gate is represented as a marker
         with a popup displaying the orthometric height (Quota Orto. [m]). The fake initial and final gates are highlighted with yellow markers, while the other gates are marked with default markers."""
         if not filename.endswith(".html"):
-            filename = filename + ".html"
+            filename = filename +".html"
 
         folium_map = folium.Map(location=[self.__gates['WGS84_Lat2'].mean(), self.__gates['WGS84_Lon2'].mean()], zoom_start=20)
         for _, row in self.__gates.iterrows():
@@ -154,6 +170,7 @@ class trajectoryLoader():
             else:
                 folium.Marker(location=[row['WGS84_Lat2'], row['WGS84_Lon2']], popup=f"Quota: {row['Quota Orto. [m]']} m").add_to(folium_map)
 
+        os.makedirs(self.__picturesSavePath, exist_ok=True)
         folium_map.save(os.path.join(self.__picturesSavePath, filename))
 
 
@@ -183,6 +200,7 @@ class trajectoryLoader():
             folium.CircleMarker(location=[point['WGS84_Lat2'], point['WGS84_Lon2']], popup=f"Quota: {point['Quota Orto. [m]']} m", 
                         radius=1, color="blue", fill=True, fill_color="blue").add_to(folium_map)
 
+        os.makedirs(self.__picturesSavePath, exist_ok=True)
         folium_map.save(os.path.join(self.__picturesSavePath, saveName.split(".html")[0] + "_with_gates.html"))
 
         with open(data, "r", encoding="UTF-8") as fp:
@@ -233,15 +251,67 @@ class trajectoryLoader():
                 folium.CircleMarker(location=[point['WGS84_Lat2'], point['WGS84_Lon2']], popup=f"Quota: {point['Quota Orto. [m]']} m", 
                         radius=1, color="orange", fill=True, fill_color="green").add_to(folium_map)
 
+            os.makedirs(saveName, exist_ok=True)
+            folium_map.save(os.path.join(saveName, f"trajectory_{i}.html"))
 
-            folium_map.save(os.path.join(saveName, f"_trajectory_{i}.html"))
+    
+    def plotSimulatedTrajectoriesBella(self, trajectories:list[pd.DataFrame], saveName:str) -> None:
+        """Visualizes the simulated trajectories by creating a map with markers for each gate and simulated trajectory point, and saves the map as an HTML file.
+        The method uses the Folium library to create an interactive map centered around the average latitude and longitude of the gates, with a zoom level of 20. Each gate is represented as 
+        a marker with a popup displaying the orthometric height (Quota Orto. [m]). The fake initial and final gates are highlighted with purple markers, while the other gates are marked with red markers. 
+        The simulated trajectory points are marked with blue markers.
+        
+        Args:
+            trajectories (list[pd.DataFrame]): A list of DataFrames, where each DataFrame contains the points of a simulated trajectory in the format [WGS84_Lat2, WGS84_Lon2, Quota Orto. [m]].
+            saveName (str): The name of the file to save the plot as an HTML file. If the name does not end with '.html', the method will automatically append the '.html' extension to the filename.
+        """
+        if "." in saveName:
+            saveName = saveName.split(".html")[0]
 
+
+        for i, trajectory in enumerate(trajectories, start=1):    
+            folium_map = folium.Map(location=[self.__gates['WGS84_Lat2'].mean(), self.__gates['WGS84_Lon2'].mean()], zoom_start=20)
+            for _, row in self.__gates.iterrows():
+                if row.name in ['fakeInit', 'fakeFinal']:
+                    folium.CircleMarker(location=[row['WGS84_Lat2'], row['WGS84_Lon2']], popup=f"Quota: {row['Quota Orto. [m]']} m", 
+                            radius=2, color="purple", fill=True, fill_color="purple").add_to(folium_map)
+                else: 
+                    folium.CircleMarker(location=[row['WGS84_Lat2'], row['WGS84_Lon2']], popup=f"Quota: {row['Quota Orto. [m]']} m", 
+                            radius=2, color="red", fill=True, fill_color="red").add_to(folium_map)
+
+            for _, point in trajectory.iterrows():
+                folium.CircleMarker(location=[point['WGS84_Lat2'], point['WGS84_Lon2']], popup=f"Quota: {point['Quota Orto. [m]']} m", 
+                        radius=1, color="blue", fill=True, fill_color="blue").add_to(folium_map)
+                
+            for _, point in trajectory.iterrows():
+                folium.CircleMarker(location=[*self.__transformer_UTM_to_WGS84.transform(point['Est [m]'], point['Nord [m]'])[::-1]], popup=f"Quota: {point['Quota Orto. [m]']} m", 
+                        radius=1, color="orange", fill=True, fill_color="orange").add_to(folium_map)
+                
+
+            # Prints the original trajectory on the same map for comparison
+            for _, point in self.prepareTrajectories().iterrows():
+                folium.CircleMarker(location=[point['WGS84_Lat2'], point['WGS84_Lon2']], popup=f"Quota: {point['Quota Orto. [m]']} m", 
+                        radius=1, color="black", fill=True, fill_color="black").add_to(folium_map)
+                
+            # Prints the new trajectory on the same map for comparison
+            for _, point in self.prepareTrajectories(gates=trajectory).iterrows():
+                folium.CircleMarker(location=[point['WGS84_Lat2'], point['WGS84_Lon2']], popup=f"Quota: {point['Quota Orto. [m]']} m", 
+                        radius=1, color="green", fill=True, fill_color="green").add_to(folium_map)
+                
+            for _, point in self.prepareTrajectories(gates=trajectory).iterrows():
+                folium.CircleMarker(location=[*self.__transformer_UTM_to_WGS84.transform(point['Est [m]'], point['Nord [m]'])[::-1]], popup=f"Quota: {point['Quota Orto. [m]']} m", 
+                        radius=1, color="grey", fill=True, fill_color="grey").add_to(folium_map)
+
+            os.makedirs(saveName, exist_ok=True)
+            folium_map.save(os.path.join(saveName, f"trajectory_{i}.html"))
+        
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Trajectory Loader and Visualizer")
     parser.add_argument("--path", type=str, default="./data/pointsLocationFirstCourse.csv", help="Path to the CSV file containing gate positions.")
     parser.add_argument("--plotGatesPath", type=str, default=None, help="Path to save the plot of gates (HTML file). If not provided, the plot will not be saved.")
     parser.add_argument("--plotInterpolatedTrajectoryPath", type=str, default=None, help="Path to save the plot of the interpolated trajectory (HTML file). If not provided, the plot will not be saved.")
+    parser.add_argument("--skiersDataPath", type=str, default=None, help="Path to the JSON file containing the original GNSS data of the skiers. If not provided, the original GNSS data will not be plotted.")
     parser.add_argument("--numTrajectories", type=int, default=-1, help="Number of new trajectories to generate.")
     parser.add_argument("--maxDistanceMeters", type=float, default=8, help="Maximum distance in meters for the generated noise.")
     parser.add_argument("--startLeft", action='store_true', help="Flag to indicate whether to start adding noise to the left of the original trajectory.")
@@ -250,11 +320,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     t = trajectoryLoader(args.path)
+    os.makedirs("figures", exist_ok=True)
+
     if args.plotGatesPath:
+        os.makedirs(args.plotGatesPath, exist_ok=True)
         t.plotTrajectory(args.plotGatesPath)
 
-    if args.plotInterpolatedTrajectoryPath:
-        t.plotAll(args.plotInterpolatedTrajectoryPath, args.plotInterpolatedTrajectoryPath.split(".html")[0] + "_with_gates.html")
+    if args.plotInterpolatedTrajectoryPath and args.skiersDataPath:
+        os.makedirs(args.plotInterpolatedTrajectoryPath, exist_ok=True)
+        t.plotAll(args.skiersDataPath, args.plotInterpolatedTrajectoryPath.split(".html")[0] + "_with_gates.html")
 
     if args.simulatedTrajectoriesPath and args.numTrajectories > 0:
         os.makedirs(args.simulatedTrajectoriesPath, exist_ok=True)
@@ -262,16 +336,5 @@ if __name__ == "__main__":
         t.plotSimulatedTrajectories(newTraj, args.simulatedTrajectoriesPath)
         os.makedirs(os.path.join(args.simulatedTrajectoriesPath, "simulated_trajectories"), exist_ok=True)
         t.saveNewTrajectories(newTraj, os.path.join(args.simulatedTrajectoriesPath, "simulated_trajectories.csv"))
-    
-
-
-
-# if __name__ == "__main__":
-#     path = "./data/pointsLocationFirstCourse.csv"
-#     t = trajectoryLoader(path)
-#     t.plotTrajectory()
-#     t.plotAll("./data/processed/F_tr1_d1.json")
-
-#     newTraj = t.generateNewTrajectories(numTrajectories=5, maxDistanceMeters=8, startLeft=True)
-#     t.plotSimulatedTrajectories(newTraj)
-
+        t.plotSimulatedTrajectoriesBella(newTraj, args.simulatedTrajectoriesPath)
+        
