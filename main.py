@@ -5,7 +5,7 @@ from trajectory.trajectoryFromPorte import trajectoryLoader
 
 from skier_model_py.physical_model import esegui_simulazione 
 
-def main():
+def main(): #To call main paste: python main.py --gates data/pointsLocationFirstCourse.csv 
     parser = argparse.ArgumentParser(description="A script that accepts keyword-like arguments.")
     #paths for loading and saving data (REQUIRED)
     parser.add_argument("--gates", type=str, help="gates_path", required=True)
@@ -39,7 +39,6 @@ def main():
         os.makedirs(args.plotPath, exist_ok=True)
         loader.plotSimulatedTrajectories(newTraj, args.plotPath)
 
-    #TODO: CAMBIARE IN UTM TUTTE LE COORDINATE
     #obtain the full (interpolated) trajectories
     listDf, risSim = [], []
     for traj in newTraj:
@@ -47,8 +46,12 @@ def main():
         trajectory = loader.prepareTrajectories(numPoints=300, gates=traj)
         listDf.append(trajectory)
         print("__Start simulation...___")
+        print(trajectory["WGS84_Lon2"].values.shape)
+        print(trajectory["WGS84_Lat2"].values.shape)
+        print(trajectory["Quota Orto. [m]"].values.shape)
         risSim.append(esegui_simulazione(trajectory["WGS84_Lon2"].values, trajectory["WGS84_Lat2"].values, trajectory["Quota Orto. [m]"].values))
         print("___End simulation___")
+        break
     
     
     # Post processing of the results (TODO: add the file)
