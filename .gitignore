@@ -1,4 +1,5 @@
 *.asv
 .venv
 .myvenv
+.lasreading
 __pycache__/

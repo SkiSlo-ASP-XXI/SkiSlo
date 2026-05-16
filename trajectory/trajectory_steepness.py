@@ -49,7 +49,7 @@ def get_steepness_at_points(query_points, pcd, output_file, search_radius=5.0):
     
     return results
 
-LASFILE = "output.las"
+LASFILE = "/Users/andre/Documents/github.nosync/SkiSlo/trajectory/output.las"
 TRAJECTORY_FILE = "trajectory.json"
 
 #using pyvista

@@ -2,10 +2,13 @@ import numpy as np
 from scipy.interpolate import interp1d
 from scipy.integrate import solve_ivp
 import warnings
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+
 
 warnings.filterwarnings("ignore") # Nasconde i warning per divisioni per zero temporanee
 
-def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225, CdA=0.3, v0=4.91):
+def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225, CdA=0.3, v0=4.91, plot = False):
     """
     Calcola la fisica di uno sciatore lungo una traiettoria 3D fornita.
     
@@ -17,6 +20,9 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
     Output:
     - Ritorna un dizionario con i profili di spazio, velocità e forze.
     """
+    x_traj = (x_traj-np.min(x_traj))
+    y_traj = (y_traj-np.min(y_traj))
+    z_traj = (z_traj-np.min(z_traj))
 
     # Arrotondamento per eliminare rumore numerico
     x_traj = np.round(x_traj, 2)
@@ -221,11 +227,8 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
         F_net_vec[i]  = F_net
         R_vec[i] = R_local
 
-    # =========================================
-    # 7. OUTPUT
-    # =========================================
-    # Restituiamo un dizionario in modo da poter accedere facilmente ai dati dal notebook
-    return {
+    # Chiamiamo la simulazione (nota: assicurati che i parametri di default m=80 vadano bene)
+    risultati_sim = {
         's': s_sol,
         'v': v_sol,
         'F_lat': F_lat_vec,
@@ -233,3 +236,177 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
         'F_net': F_net_vec,
         'R': R_vec,
     }
+
+    # Estraiamo i dati dal dizionario
+
+    if plot:
+        s_sim = risultati_sim['s']
+        v_sim = risultati_sim['v']
+
+        # Convertiamo le Forze simulate in Accelerazioni (a = F / m) per confrontarle coi sensori
+        at_sim = risultati_sim['F_net'] / m
+        alat_sim = risultati_sim['F_lat'] / m # Accelerazione laterale totale
+
+        # --- Cella 4: Validazione Globale - Velocità vs Spazio ---
+        plt.figure(figsize=(12, 5))
+
+        # Dati simulati
+        plt.plot(s_sim, v_sim * 3.6, color='darkorange', label='Simulata (Modello)', linewidth=2, linestyle='--')
+
+        plt.title('Validazione Globale: Profilo di Velocità', fontsize=14)
+        plt.xlabel('Spazio percorso s [m]', fontsize=12)
+        plt.ylabel('Velocità [km/h]', fontsize=12)
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.legend(fontsize=12)
+        plt.tight_layout()
+        
+        # --- Cella 5: Dinamica Longitudinale - Accelerazione Tangenziale vs Spazio ---
+        plt.figure(figsize=(12, 5))
+
+        # Dati simulati (F_net / m)
+        plt.plot(s_sim, at_sim, color='darkorange', label='Simulata ($F_{net}/m$)', linewidth=2, linestyle='--')
+
+        plt.axhline(0, color='black', linewidth=1, linestyle='-') # Linea dello zero per riferimento
+        plt.title('Dinamica Longitudinale: Accelerazione Tangenziale', fontsize=14)
+        plt.xlabel('Spazio percorso s [m]', fontsize=12)
+        plt.ylabel('Accelerazione Tangenziale $a_t$ [$m/s^2$]', fontsize=12)
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.legend(fontsize=12)
+        plt.tight_layout()
+
+        # --- Cella 6: Dinamica Trasversale - Accelerazione Normale/Laterale vs Spazio ---
+        plt.figure(figsize=(12, 5))
+
+        # Dati simulati (F_lat_tot / m)
+        plt.plot(s_sim, alat_sim, color='darkorange', label='Simulata ($F_{lat}/m$)', linewidth=2, linestyle='--')
+
+        plt.title('Dinamica Trasversale: Accelerazione in Curva', fontsize=14)
+        plt.xlabel('Spazio percorso s [m]', fontsize=12)
+        plt.ylabel('Accelerazione Normale $a_n$ [$m/s^2$]', fontsize=12)
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.legend(fontsize=12)
+        plt.tight_layout()
+
+        # --- Cella 8: Accelerazione Tangenziale con Filtro Savitzky-Golay ---
+        from scipy.signal import savgol_filter
+
+
+        plt.figure(figsize=(12, 5))
+
+        # Dati simulati
+        plt.plot(s_sim, at_sim, color='darkorange', label='Simulata ($F_{net}/m$)', linewidth=2.5, linestyle='--')
+
+        plt.axhline(0, color='black', linewidth=1, linestyle='-')
+        plt.title('Confronto Pulito: Accelerazione Tangenziale Filtrata', fontsize=14)
+        plt.xlabel('Spazio percorso s [m]', fontsize=12)
+        plt.ylabel('Accelerazione Tangenziale $a_t$ [$m/s^2$]', fontsize=12)
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.legend(fontsize=12)
+        plt.tight_layout()
+
+        # --- Cella 7 (Aggiornata): Analisi Geometrica - Raggio di Curvatura ---
+        plt.figure(figsize=(12, 5))
+
+        r_sim = risultati_sim['R']
+        r_sim_plot = r_sim
+        # r_sim_plot = np.clip(np.abs(r_sim), 0, 100)
+
+
+        # Plot Dati simulati
+        plt.plot(s_sim, r_sim_plot, color='darkorange', label='Simulato (Modello k=50)', linewidth=2, linestyle='--')
+
+        plt.title('Check Geometrico: Raggio di Curvatura', fontsize=14)
+        plt.xlabel('Spazio percorso s [m]', fontsize=12)
+        plt.ylabel('Raggio di Curvatura [m]', fontsize=12)
+
+        # INVERSIONE ASSE Y: Molto utile in telemetria! 
+        # Così i raggi di curvatura piccoli (curve strette) puntano verso l'alto come dei picchi.
+        plt.gca().invert_yaxis() 
+
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.legend(fontsize=12)
+        plt.tight_layout()
+
+        # --- cumulative arc length ---
+        dx = np.diff(x_traj)
+        dy = np.diff(y_traj)
+        seg_len = np.hypot(dx, dy)
+        s = np.concatenate(([0.0], np.cumsum(seg_len)))   # distance from start at each vertex
+
+        # segment start points and direction vectors (for projection)
+        P0 = np.column_stack([x_traj[:-1], y_traj[:-1]])
+        D  = np.column_stack([dx, dy])
+        seg_len2 = seg_len**2
+        seg_len2_safe = np.where(seg_len2 > 0, seg_len2, 1.0)  # avoid /0 for duplicate points
+
+        def closest_point_on_traj(xq, yq):
+            """Return (x*, y*, distance_along_traj) of the closest point on the trajectory."""
+            Q = np.array([xq, yq])
+            # parameter t in [0,1] along each segment for the projection of Q
+            t = ((Q - P0) * D).sum(axis=1) / seg_len2_safe
+            t = np.clip(t, 0.0, 1.0)
+            proj = P0 + t[:, None] * D                       # projected point on each segment
+            d2 = ((proj - Q)**2).sum(axis=1)                 # squared distance to each segment
+            i = int(np.argmin(d2))
+            x_star, y_star = proj[i]
+            s_star = s[i] + t[i] * seg_len[i]                # arc length at the projected point
+            return x_star, y_star, s_star
+
+        # --- build colored line segments ---
+        points = np.array([x_traj, y_traj]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        seg_s = 0.5 * (s[:-1] + s[1:])
+
+        fig, ax = plt.subplots(figsize=(8, 7))
+
+        lc = LineCollection(segments, cmap='viridis', norm=plt.Normalize(s.min(), s.max()))
+        lc.set_array(seg_s)
+        lc.set_linewidth(2.5)
+        ax.add_collection(lc)
+
+        ax.plot(x_traj[0],  y_traj[0],  'o', color='black', label='start')
+        ax.plot(x_traj[-1], y_traj[-1], 's', color='red',   label='end')
+
+        ax.set_xlim(x_traj.min(), x_traj.max())
+        ax.set_ylim(y_traj.min(), y_traj.max())
+        ax.set_aspect('equal', adjustable='datalim')
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.legend(loc='best')
+
+        cbar = fig.colorbar(lc, ax=ax)
+        cbar.set_label('Distance along trajectory from start')
+
+        # --- interactive hover ---
+        hover_marker, = ax.plot([], [], 'o', color='white',
+                                markeredgecolor='black', markersize=8, zorder=5)
+        annot = ax.annotate(
+            "", xy=(0, 0), xytext=(12, 12), textcoords='offset points',
+            bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='black', alpha=0.9),
+            fontsize=10, zorder=6,
+        )
+        annot.set_visible(False)
+
+        def on_move(event):
+            if event.inaxes is not ax or event.xdata is None:
+                hover_marker.set_data([], [])
+                annot.set_visible(False)
+                fig.canvas.draw_idle()
+                return
+            x_star, y_star, s_star = closest_point_on_traj(event.xdata, event.ydata)
+            hover_marker.set_data([x_star], [y_star])
+            annot.xy = (x_star, y_star)
+            annot.set_text(f"s = {s_star:.3f}\n(x, y) = ({x_star:.3f}, {y_star:.3f})")
+            annot.set_visible(True)
+            fig.canvas.draw_idle()
+
+        fig.canvas.mpl_connect('motion_notify_event', on_move)
+
+        plt.tight_layout()
+        plt.show()
+    
+    # =========================================
+    # 7. OUTPUT
+    # =========================================
+    # Restituiamo un dizionario in modo da poter accedere facilmente ai dati dal notebook
+    return risultati_sim
