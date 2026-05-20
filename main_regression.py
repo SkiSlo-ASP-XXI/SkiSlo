@@ -1,5 +1,5 @@
-import argparse
-import os, sys
+import argparse, os, random
+from collections import defaultdict
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,8 +9,18 @@ from tqdm import tqdm
 from trajectory.trajectoryFromPorte import trajectoryLoader
 
 from skier_model_py.physical_model import esegui_simulazione
+import scipy.interpolate as scp
 
-def main(): #To call main paste: python main.py --gates data/pointsLocationFirstCourse.csv --numTrajectories 50
+
+def set_seed(seed:int)->int:
+    np.random.seed(seed)
+    random.seed(seed)
+    return seed
+
+
+
+
+def main(): #To call main paste: python main_regression.py --gates data/pointsLocationFirstCourse.csv --numTrajectories 50
     parser = argparse.ArgumentParser(description="A script that accepts keyword-like arguments.")
     #paths for loading and saving data (REQUIRED)
     parser.add_argument("--gates", type=str, help="gates_path", required=True)
@@ -49,7 +59,7 @@ def main(): #To call main paste: python main.py --gates data/pointsLocationFirst
     maxX, maxY, minX, minY = -np.inf, -np.inf, np.inf, np.inf
     
     for traj in tqdm(newTraj, desc="Processing trajectories", unit="trajectory", leave=False):
-        trajectory = loader.prepareTrajectories(numPoints=3000, gates=traj)
+        trajectory = loader.prepareTrajectories(numPoints=1_000, gates=traj)
         
         maxX = max(maxX, trajectory["Est [m]"].max())
         maxY = max(maxY, trajectory["Nord [m]"].max())
@@ -66,56 +76,39 @@ def main(): #To call main paste: python main.py --gates data/pointsLocationFirst
         c_haz = c_haz / np.max(c_haz)  # Normalize to [0, 1] 
         haz_coeff.append(c_haz)
 
-    # Create a river matrix of size 5000x5000 and fill it with the hazard coefficients (for visualization purposes)
+    total_coefficients = defaultdict(float)
+    counter = defaultdict(float)
+    for trajectory, coeff in tqdm(zip(listDf, haz_coeff), desc="Generating total risl", unit="trajectory", leave=False):
+        for x,y,risk in zip(trajectory["Est [m]"].values, trajectory["Nord [m]"].values, coeff):            
+            total_coefficients[(x,y)] += risk
+            counter[(x,y)] += 1
     
-    riverMatrix = np.zeros((int(maxX - minX)+1, int(maxY - minY)+1))
-    reliabilityMatrix = np.zeros((int(maxX - minX)+1, int(maxY - minY)+1))
-    # The matrix is such that the zero of the x-axis is the minimum x value of the trajectories and the zero of the y-axis is the minimum y value of the trajectories. 
-    # The values of the matrix are filled with the hazard coefficients, where the position in the matrix corresponds to the position in the trajectory (x, y).
-    for i in range(len(listDf)):
-        x,y = listDf[i]["Est [m]"].values, listDf[i]["Nord [m]"].values
-        x = ((x - minX) / (maxX - minX+1e-9) * (riverMatrix.shape[1]-1)).astype(int)  # Scale x to [0, maxShape-1]
-        y = ((y - minY) / (maxY - minY+1e-9) * (riverMatrix.shape[0]-1)).astype(int)  # Scale y to [0, maxShape-1]
-        riverMatrix[y, x] += haz_coeff[i]  # Fill the matrix with the hazard coefficient
-        reliabilityMatrix[y, x] += 1
-    
-    riverMatrix2 = riverMatrix / (reliabilityMatrix + 1e-9)  # Average hazard coefficient for each position
+    total_coefficients = {k: 100*total_coefficients[k]/(counter[k]) for k in total_coefficients.keys()}
 
+    #FUNCTION FITTING
+    xs = np.array([k[0] for k in total_coefficients.keys()])
+    ys = np.array([k[1] for k in total_coefficients.keys()])
+    z = np.array([ total_coefficients[(x,y)] for x,y in zip(xs, ys)])
 
-    riverMatrix = 100 * riverMatrix/np.max(riverMatrix)
-    reliabilityMatrix = 100 * reliabilityMatrix/np.max(reliabilityMatrix)
-    
+    inter_param = scp.bisplrep(xs, ys, z,kx=4,ky=4)
 
+    x = np.linspace(minX, maxX, 2_000)
+    y = np.linspace(minY, maxY, 2_000)
+    pred = scp.bisplev(x,y,inter_param)
 
-    # fig = plt.figure(figsize=(10,10))
-    # plt.matshow(riverMatrix, cmap='hot', fignum=fig.number)
-    print("Plotting the river matrix...")
-    print(f"Max X: {maxX}, Min X: {minX}, Max Y: {maxY}, Min Y: {minY}")
-    print(f"Difference x: {maxX - minX}, Difference y: {maxY - minY}")
-    print("Non-zero values in river matrix:", len(riverMatrix[riverMatrix > 0]))
-    print("Matrix shape :", riverMatrix.shape)
-
-
-    cmap = plt.get_cmap('RdYlGn_r').copy()
-    cmap.set_bad(color='white')
-
-    plt.figure(figsize=(10, 10))
-    plt.imshow(np.ma.masked_equal(riverMatrix, 0), cmap=cmap, origin='lower')
-    plt.colorbar(label='Hazard coefficient')
-    
-    plt.figure(figsize=(10, 10))
-    plt.imshow(np.ma.masked_equal(reliabilityMatrix, 0), cmap=cmap, origin='lower')
-    plt.colorbar(label='Reliability')
-    
-    plt.figure(figsize=(10, 10))
-    plt.imshow(np.ma.masked_equal(riverMatrix2, 0), cmap=cmap, origin='lower')
-    plt.colorbar(label='Normalized Hazard coefficient')
-    
-    
-    
-    #show results
+    #plot pred
+    plt.figure(figsize=(10, 8))
+    plt.imshow(pred, extent=(minX, maxX, minY, maxY), origin='lower', cmap='viridis')
+    plt.colorbar(label='Hazard Coefficient')
+    plt.title('Interpolated Hazard Coefficient')
+    plt.xlabel('Est [m]')
+    plt.ylabel('Nord [m]')
+    plt.savefig("interpolated_hazard_coefficient.png")
     plt.show()
+    
 
     
 if __name__ == "__main__": 
+    SEED = 23
+    assert set_seed(SEED) == SEED, "Error setting the seed"
     main()
