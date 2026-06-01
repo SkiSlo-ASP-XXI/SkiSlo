@@ -154,10 +154,14 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     plt.figure(figsize=(15, 15))
     plt.imshow(np.ma.masked_equal(riverMatrix.T, 0), cmap=cmap, origin='lower')
     plt.colorbar(label='Hazard coefficient')
-    
+    plt.savefig("river_matrix.pdf", bbox_inches='tight', format='pdf')
+
+
+
     plt.figure(figsize=(15, 15))
     plt.imshow(np.ma.masked_equal(reliabilityMatrix.T, 0), cmap=cmap, origin='lower')
     plt.colorbar(label='Reliability')
+    plt.savefig("reliability_matrix.pdf", bbox_inches='tight', format='pdf')
     
     #show results
     plt.show()
