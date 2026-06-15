@@ -8,7 +8,7 @@ from matplotlib.collections import LineCollection
 
 warnings.filterwarnings("ignore") # Nasconde i warning per divisioni per zero temporanee
 
-def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225, CdA=0.3, v0=4.91, plot = False):
+def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225, CdA=0.3, v0=4.91, plot = False, alfa = None):
     """
     Calcola la fisica di uno sciatore lungo una traiettoria 3D fornita.
     
@@ -62,6 +62,8 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
     alpha_deg[N-1] = alpha_deg[N-2]
     alpha_deg[0] = alpha_deg[1] # Riempimento bordo iniziale
 
+    if alfa is not None:
+        alpha_deg = np.asarray(alfa, dtype=float)
     # BETA -> angolo rispetto alla verticale
     dx_ref = x_traj[-1] - x_traj[0]
     dy_ref = y_traj[-1] - y_traj[0]

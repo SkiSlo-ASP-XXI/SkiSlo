@@ -61,8 +61,22 @@ cloud['Elevation'] = points[:,2]
 def to_float(arr):
     a = np.asarray(arr, dtype=np.float32)
     if a.max() > 1.0:  # tipicamente 0..65535
-        a = a / 65535.0
+        a = a / a.max()
     return a
+
+print("LAS file read successfully")
+print(las)
+
+print("Points shape:", points.shape)
+print(points)
+
+print("Creating PyVista PolyData")
+print(cloud)
+
+print("Elevation values:")
+print(cloud['Elevation'])
+
+exit(1)
 
 
 # Se RGB disponibile
