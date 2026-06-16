@@ -65,7 +65,7 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
         alpha = -np.arctan2(dz, np.sqrt(dx**2 + dy**2))
         alpha_deg_est[i] = np.degrees(alpha)
 
-    alpha_deg = -obtain_inclination(x_utm,y_utm,'/Users/andre/Documents/github.nosync/SkiSlo/data/surfaces/Sestriere_fotogrammetria_95000.las')
+    alpha_deg = -obtain_inclination(x_utm,y_utm,'/Users/andre/Documents/github.nosync/SkiSlo/data/surfaces/Sestriere_p1_fotogrammetria_14416721.las')
     if alpha_deg.shape[0] != N or np.isnan(alpha_deg).any():
         print("Warning: Estimated inclination has NaN values or length mismatch. Using trajectory-based estimation instead.")
         alpha_deg = alpha_deg_est

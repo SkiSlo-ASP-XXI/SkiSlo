@@ -169,7 +169,7 @@ def obtain_inclination(x, y, file_source):
     bbox = (xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max())
     surface = load_surface_points(file_source, bbox, 10.0)
 
-    der, _ = tangent_derivatives(xy, surface, 3.0, 10)
+    der, _ = tangent_derivatives(xy, surface, 5.0, 5)
 
     return np.degrees(np.arctan(der))
 

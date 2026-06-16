@@ -20,7 +20,7 @@ def set_seed(seed:int) -> int:
     return seed
 
 def _simulate(df):
-    return esegui_simulazione(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, plot = True)
+    return esegui_simulazione(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values)#, plot = True)
 
 
 
@@ -151,14 +151,14 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     cmap = plt.get_cmap('RdYlGn_r').copy()
     cmap.set_bad(color='white')
 
-    plt.figure(figsize=(15, 15))
+    plt.figure(figsize=(10, 10))
     plt.imshow(np.ma.masked_equal(riverMatrix.T, 0), cmap=cmap, origin='lower')
     plt.colorbar(label='Hazard coefficient')
     plt.savefig("river_matrix.pdf", bbox_inches='tight', format='pdf')
 
 
 
-    plt.figure(figsize=(15, 15))
+    plt.figure(figsize=(10, 10))
     plt.imshow(np.ma.masked_equal(reliabilityMatrix.T, 0), cmap=cmap, origin='lower')
     plt.colorbar(label='Reliability')
     plt.savefig("reliability_matrix.pdf", bbox_inches='tight', format='pdf')
