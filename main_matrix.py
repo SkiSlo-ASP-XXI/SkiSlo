@@ -9,6 +9,7 @@ from trajectory.trajectoryFromPorte import trajectoryLoader
 
 from skier_model_py.physical_model import esegui_simulazione
 
+from trajectory.tangent_derivative import obtain_inclination
 
 from tqdm.contrib.concurrent import process_map
 from scipy.ndimage import convolve
@@ -19,8 +20,27 @@ def set_seed(seed:int) -> int:
     random.seed(seed)
     return seed
 
-def _simulate(df):
-    return esegui_simulazione(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values)#, plot = True)
+def return_inclination(x_utm:np.ndarray, y_utm:np.ndarray, z_traj:np.ndarray, path_to_las:str):    
+    alpha_deg = -obtain_inclination(x_utm,y_utm,path_to_las)
+    N = len(x_utm)
+    
+    if alpha_deg.shape[0] != N or np.isnan(alpha_deg).any():
+        alpha_deg = np.zeros(N)
+        for i in range(1, N-2):
+            dx = x_utm[i+1] - x_utm[i]
+            dy = y_utm[i+1] - y_utm[i]
+            dz = z_traj[i+1] - z_traj[i]
+            alpha = -np.arctan2(dz, np.sqrt(dx**2 + dy**2))
+            alpha_deg[i] = np.degrees(alpha)
+    alpha_deg[N-1] = alpha_deg[N-2]
+    alpha_deg[0] = alpha_deg[1] # Riempimento bordo iniziale
+
+    return alpha_deg
+        
+
+def _simulate(df, path_to_las:str):
+    alphas = return_inclination(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, path_to_las)
+    return esegui_simulazione(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, alfa=alphas), alphas
 
 
 
@@ -40,6 +60,10 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     #parameters for plotting (OPTIONAL)
     parser.add_argument("--plot", action='store_true', help="Flag to indicate whether to plot the original and simulated trajectories.")
     parser.add_argument("--plotPath", type=str, default="./plots", help="Path to save the trajectory plots. If not provided, the plots will be saved in ./plots.")
+    
+    parser.add_argument("--path_to_las", type=str, default="/Users/andre/Documents/github.nosync/SkiSlo/data/surfaces/Sestriere_fotogrammetria_95000.las",
+                        help="Path to the .las file containing the elevation data. If not provided, it will default to ./data/surfaces/Sestriere_fotogrammetria_95000.las.")
+    
     #########################
 
     args = parser.parse_args()
@@ -61,19 +85,6 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     #obtain the full (interpolated) trajectories
     listDf, risSim = [], []
     maxX, maxY, minX, minY = -np.inf, -np.inf, np.inf, np.inf
-    
-    # OLD CODE
-    # for traj in tqdm(newTraj, desc="Processing trajectories", unit="trajectory", leave=False):
-    #     trajectory = loader.prepareTrajectories(numPoints=3_000, gates=traj)
-        
-    #     maxX = max(maxX, trajectory["Est [m]"].max())
-    #     maxY = max(maxY, trajectory["Nord [m]"].max())
-    #     minX = min(minX, trajectory["Est [m]"].min())
-    #     minY = min(minY, trajectory["Nord [m]"].min())
-
-    #     listDf.append(trajectory)
-    #     risSim.append(esegui_simulazione(trajectory["Est [m]"].values, trajectory["Nord [m]"].values, trajectory["Quota Orto. [m]"].values))
-    
 
     listDf = [loader.prepareTrajectories(numPoints=3_000, gates=traj) for traj in newTraj]
 
@@ -83,14 +94,75 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     risSim = process_map(
         _simulate,
         listDf,
+        [args.path_to_las] * len(listDf),
         max_workers=os.cpu_count(),
         chunksize=1,
         desc="Simulating",
         unit="traj",
     )
+    risSim, alphas  = [res[0] for res in risSim], [res[1] for res in risSim]  # Extract the simulation results and the alphas
 
-    # Post processing of the results 
-    haz_coeff = [np.abs(res['F_lat']) / np.max(np.abs(res['F_lat'])) for res in risSim]
+    
+
+    # Post processing of the results
+    weight = 0
+    haz_coeff_sim = [(np.abs(res['F_lat'])-np.min(np.abs(res['F_lat']))) / (np.max(np.abs(res['F_lat'])) - np.min(np.abs(res['F_lat']))) for res in risSim]
+    # haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas]
+
+    alphas_der = []
+    alphas_der_sw = []
+
+    for i in range(len(alphas)):
+        alpha_der = np.abs(np.gradient(alphas[i]))
+        alpha_der_sw = np.zeros_like(alpha_der)
+        
+        for j in range(15, len(alpha_der)-15):
+            alpha_der_sw[j] = np.mean(alpha_der[j-15:j+15])
+        
+        for j in range(15):
+            alpha_der_sw[j] = np.mean(alpha_der[0:j+15])
+            
+        for j in range(len(alpha_der)-15, len(alpha_der)):
+            alpha_der_sw[j] = np.mean(alpha_der[j-15:len(alpha_der)])
+        
+        alphas_der_sw.append(alpha_der_sw)
+        alphas_der.append(alpha_der)
+    
+    plt.figure(figsize=(10, 4))
+    plt.plot(alphas[0], label="Inclination (degrees)")
+    plt.xlabel("Point index")
+    plt.ylabel("Inclination (degrees)")
+    plt.title("Surface Inclination Along Trajectory")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(alphas_der[0], label="Inclination derivative (degrees)", linestyle='--')
+    plt.xlabel("Point index")
+    plt.ylabel("Inclination derivative (degrees)")
+    plt.title("Surface Inclination Derivative Along Trajectory")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(alphas_der_sw[0], label="Inclination derivative (degrees)", linestyle='--')
+    plt.xlabel("Point index")
+    plt.ylabel("Inclination derivative (degrees)")
+    plt.title("Surface Inclination Derivative Along Trajectory")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+
+    plt.show()
+
+    haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas_der_sw]
+
+    
+    # for alpha in alphas_der:
+
+    haz_coeff = weight * haz_coeff_sim + (1-weight) * haz_coeff_incl
 
     # Create a river matrix with the cells of 1 meter x 1 meter and fill it with the hazard coefficients (for visualization purposes)
         
@@ -98,17 +170,7 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     reliabilityMatrix = np.zeros((int(maxX - minX)+1, int(maxY - minY)+1))
     # The matrix is such that the zero of the x-axis is the minimum x value of the trajectories and the zero of the y-axis is the minimum y value of the trajectories. 
     # The values of the matrix are filled with the hazard coefficients, where the position in the matrix corresponds to the position in the trajectory (x, y).
-    # 
-    # OLD CODE
-    #  for i in range(len(listDf)):
-    #     x,y = listDf[i]["Est [m]"].values, listDf[i]["Nord [m]"].values
-    #     x = ((x - minX) / (maxX - minX+1e-9) * (riverMatrix.shape[1]-1)).astype(int)  # Scale x to [0, maxShape-1]
-    #     y = ((y - minY) / (maxY - minY+1e-9) * (riverMatrix.shape[0]-1)).astype(int)  # Scale y to [0, maxShape-1]
-    #     riverMatrix[y, x] += haz_coeff[i]  # Fill the matrix with the hazard coefficient
-    #     reliabilityMatrix[y, x] += 1
     
-    # riverMatrix = riverMatrix / (reliabilityMatrix + 1e-9)  # Average hazard coefficient for each position
-
     H, W = riverMatrix.shape
     xs, ys, hzs = [], [], []
     for df, haz in zip(listDf, haz_coeff):
@@ -138,9 +200,7 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     riverMatrix = np.where(mask, convolve(riverMatrix * reliabilityMatrix, kernel, mode='constant', cval=0) /  np.where(rel_sum > 0, rel_sum, 1), riverMatrix)
     reliabilityMatrix = np.where(mask, rel_sum, reliabilityMatrix)
 
-
-    # fig = plt.figure(figsize=(10,10))
-    # plt.matshow(riverMatrix, cmap='hot', fignum=fig.number)
+    # TODO: aggiungere i gate alla river matrix
     print("Plotting the river matrix...")
     print(f"Max X: {maxX}, Min X: {minX}, Max Y: {maxY}, Min Y: {minY}")
     print(f"Difference x: {maxX - minX}, Difference y: {maxY - minY}")
@@ -151,17 +211,15 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     cmap = plt.get_cmap('RdYlGn_r').copy()
     cmap.set_bad(color='white')
 
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(8, 8))
     plt.imshow(np.ma.masked_equal(riverMatrix.T, 0), cmap=cmap, origin='lower')
     plt.colorbar(label='Hazard coefficient')
-    plt.savefig("river_matrix.pdf", bbox_inches='tight', format='pdf')
+    plt.savefig("river_matrix.png", bbox_inches='tight', format='png')
 
-
-
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(8, 8))
     plt.imshow(np.ma.masked_equal(reliabilityMatrix.T, 0), cmap=cmap, origin='lower')
     plt.colorbar(label='Reliability')
-    plt.savefig("reliability_matrix.pdf", bbox_inches='tight', format='pdf')
+    plt.savefig("reliability_matrix.png", bbox_inches='tight', format='png')
     
     #show results
     plt.show()

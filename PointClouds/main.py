@@ -6,15 +6,15 @@ import pyvista as pv
 
 #using pyvista
 
-las = laspy.read("segment.las")
+las = laspy.read("/Users/andre/Documents/github.nosync/SkiSlo/data/surfaces/Sestriere_p1.fotogrammetria_6299.las")
 points = np.vstack((las.x,las.y,las.z)).T
 cloud = pv.PolyData(points)
 cloud['Elevation'] = points[:,2]
 # Funzione per normalizzare colori 16-bit in [0,1]
 def to_float(arr):
     a = np.asarray(arr, dtype=np.float32)
-    if a.max() > 1.0:  # tipicamente 0..65535
-        a = a / 65535.0
+    # if a.max() > 1.0:  # tipicamente 0..65535
+    #     a = a / 65535.0
     return a
 
 # Se RGB disponibile
@@ -65,16 +65,23 @@ pcd.points = o3d.utility.Vector3dVector(points)
 
 print("New centroid (X,Y):", np.asarray(pcd.points).mean(axis=0)[:2])
 
-o3d.visualization.draw_geometries([pcd])
+# Reference system (XYZ axes): red=X, green=Y, blue=Z
+# Size the axes relative to the point cloud extent so they stay visible.
+extent = np.asarray(pcd.get_max_bound()) - np.asarray(pcd.get_min_bound())
+axis_size = float(extent.max()) * 0.1
+ref_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
+    size=axis_size, origin=pcd.get_min_bound())
+
+o3d.visualization.draw_geometries([pcd, ref_frame])
 print("Points imported")
 print("Downsample the point cloud with a voxel of 0.05")
 downpcd = pcd.voxel_down_sample(voxel_size=1)
-o3d.visualization.draw_geometries([downpcd])
+o3d.visualization.draw_geometries([downpcd, ref_frame])
 
 print("Recompute the normal of the downsampled point cloud")
 downpcd.estimate_normals(
     search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=5, max_nn=30))
-o3d.visualization.draw_geometries([downpcd], point_show_normal=True)
+o3d.visualization.draw_geometries([downpcd, ref_frame], point_show_normal=True)
 min_bound = pcd.get_min_bound()  # [x_min, y_min, z_min]
 max_bound = pcd.get_max_bound()  # [x_max, y_max, z_max]
 
