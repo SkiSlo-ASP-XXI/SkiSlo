@@ -4,6 +4,7 @@ from scipy.integrate import solve_ivp
 import warnings
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
+from trajectory.tangent_derivative import obtain_inclination
 
 
 warnings.filterwarnings("ignore") # Nasconde i warning per divisioni per zero temporanee
@@ -20,6 +21,11 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
     Output:
     - Ritorna un dizionario con i profili di spazio, velocità e forze.
     """
+    # Keep the original UTM32N coordinates: the .las surface lookup must query
+    # the trajectory in the same (absolute) CRS as the point cloud.
+    x_utm = np.asarray(x_traj, dtype=float)
+    y_utm = np.asarray(y_traj, dtype=float)
+
     x_traj = (x_traj-np.min(x_traj))
     y_traj = (y_traj-np.min(y_traj))
     z_traj = (z_traj-np.min(z_traj))
@@ -51,14 +57,18 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
     # ===========================================
     # 2. CALCOLO DI ALPHA E BETA
     # ===========================================
-    alpha_deg = np.zeros(N)
+    alpha_deg_est = np.zeros(N)
     for i in range(1, N-2):
         dx = x_traj[i+1] - x_traj[i]
         dy = y_traj[i+1] - y_traj[i]
         dz = z_traj[i+1] - z_traj[i]
         alpha = -np.arctan2(dz, np.sqrt(dx**2 + dy**2))
-        alpha_deg[i] = np.degrees(alpha)
+        alpha_deg_est[i] = np.degrees(alpha)
 
+    alpha_deg = -obtain_inclination(x_utm,y_utm,'/Users/andre/Documents/github.nosync/SkiSlo/data/surfaces/Sestriere_fotogrammetria_95000.las')
+    if alpha_deg.shape[0] != N or np.isnan(alpha_deg).any():
+        print("Warning: Estimated inclination has NaN values or length mismatch. Using trajectory-based estimation instead.")
+        alpha_deg = alpha_deg_est
     alpha_deg[N-1] = alpha_deg[N-2]
     alpha_deg[0] = alpha_deg[1] # Riempimento bordo iniziale
 
@@ -405,6 +415,19 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
         fig.canvas.mpl_connect('motion_notify_event', on_move)
 
         plt.tight_layout()
+
+        #------Plot dell'andamento dell'inclinazione
+        plt.figure(figsize=(10, 4))
+        plt.plot(alpha_deg, label="Inclination (degrees)")
+        plt.plot(alpha_deg_est, label="Estimated inclination (degrees)")
+        plt.xlabel("Point index")
+        plt.ylabel("Inclination (degrees)")
+        plt.title("Surface Inclination Along Trajectory")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        plt.show()
+
         plt.show()
     
     # =========================================

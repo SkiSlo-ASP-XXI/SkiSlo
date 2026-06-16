@@ -49,7 +49,7 @@ def get_steepness_at_points(query_points, pcd, output_file, search_radius=5.0):
     
     return results
 
-LASFILE = "/Users/andre/Documents/github.nosync/SkiSlo/trajectory/output.las"
+LASFILE = "/Users/andre/Documents/github.nosync/SkiSlo/data/surfaces/Sestriere_fotogrammetria_95000.las"
 TRAJECTORY_FILE = "trajectory.json"
 
 #using pyvista
@@ -77,7 +77,6 @@ print("Elevation values:")
 print(cloud['Elevation'])
 
 exit(1)
-
 
 # Se RGB disponibile
 if all(hasattr(las, ch) for ch in ("red", "green", "blue")):

@@ -129,7 +129,7 @@ def plane_gradient(points):
     return coeffs[0], coeffs[1]
 
 
-def tangent_derivatives(xy, tangents, surface_xyz, search_radius, min_neighbours):
+def tangent_derivatives(xy, surface_xyz, search_radius, min_neighbours):
     """Directional derivative of the surface along the trajectory tangent.
 
     Returns
@@ -137,6 +137,7 @@ def tangent_derivatives(xy, tangents, surface_xyz, search_radius, min_neighbours
     deriv  : (N,)  array   D(s) = grad(z) . t_hat   (NaN where under-sampled).
     grads  : (N, 2) array  the fitted (dz/dx, dz/dy) per point (NaN where skipped).
     """
+    tangents = unit_tangents(xy)
     tree = cKDTree(surface_xyz[:, :2])        # horizontal KDTree for plane fits
     n = len(xy)
     deriv = np.full(n, np.nan)
@@ -154,6 +155,23 @@ def tangent_derivatives(xy, tangents, surface_xyz, search_radius, min_neighbours
 
     return deriv, grads
 
+def obtain_inclination(x, y, file_source):
+    """Inclination [degrees] of the surface along the trajectory at each point.
+
+    The tangent derivative D = grad(z) . t_hat is the rise per metre travelled,
+    i.e. tan(theta), so the inclination angle is theta = arctan(D).
+
+    Returns
+    -------
+    (N,) array of inclination angles in degrees (NaN where under-sampled).
+    """
+    xy = np.stack([x, y], axis=1)
+    bbox = (xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max())
+    surface = load_surface_points(file_source, bbox, 10.0)
+
+    der, _ = tangent_derivatives(xy, surface, 3.0, 10)
+
+    return np.degrees(np.arctan(der))
 
 def main():
     parser = argparse.ArgumentParser(
@@ -166,7 +184,7 @@ def main():
     )
     parser.add_argument(
         "--las",
-        default="trajectory/output.las",
+        default="/Users/andre/Documents/github.nosync/SkiSlo/data/surfaces/Sestriere_fotogrammetria_95000.las",
         help="Path to the surface .las (X/Y in UTM32N, Z = surface height).",
     )
     parser.add_argument(
@@ -212,15 +230,26 @@ def main():
 
     print(f"Computing tangent derivatives (radius={args.search_radius} m)")
     deriv, grads = tangent_derivatives(
-        xy, tangents, surface, args.search_radius, args.min_neighbours
+        xy, surface, args.search_radius, args.min_neighbours
     )
 
     valid = np.isfinite(deriv)
     print(
         f"  {valid.sum()}/{len(deriv)} points evaluated; "
-        f"D range [{np.nanmin(deriv):.4f}, {np.nanmax(deriv):.4f}], "
+        f"D range [{np.nanmin(np.degrees(np.arctan(deriv))):.4f}, {np.nanmax(np.degrees(np.arctan(deriv))):.4f}], "
         f"mean {np.nanmean(deriv):.4f}"
     )
+    #plot the inclination along the trajectory in degrees
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(10, 4))
+    plt.plot(np.degrees(np.arctan(deriv)), label="Inclination (degrees)")
+    plt.xlabel("Point index")
+    plt.ylabel("Inclination (degrees)")
+    plt.title("Surface Inclination Along Trajectory")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.show()
 
     # 1) raw derivative array
     npy_path = args.out + ".npy"

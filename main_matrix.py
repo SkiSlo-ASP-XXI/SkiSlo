@@ -20,7 +20,7 @@ def set_seed(seed:int) -> int:
     return seed
 
 def _simulate(df):
-    return esegui_simulazione(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values)
+    return esegui_simulazione(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, plot = True)
 
 
 
