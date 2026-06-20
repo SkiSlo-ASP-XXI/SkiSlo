@@ -9,7 +9,7 @@ from trajectory.trajectoryFromPorte import trajectoryLoader
 
 from skier_model_py.physical_model import esegui_simulazione
 
-from trajectory.tangent_derivative import obtain_inclination
+from trajectory.tangent_derivative import obtain_inclination, obtain_slope_borders
 
 from tqdm.contrib.concurrent import process_map
 from scipy.ndimage import convolve
@@ -30,8 +30,7 @@ def return_inclination(x_utm:np.ndarray, y_utm:np.ndarray, z_traj:np.ndarray, pa
             dx = x_utm[i+1] - x_utm[i]
             dy = y_utm[i+1] - y_utm[i]
             dz = z_traj[i+1] - z_traj[i]
-            alpha = -np.arctan2(dz, np.sqrt(dx**2 + dy**2))
-            alpha_deg[i] = np.degrees(alpha)
+            alpha_deg[i] = np.degrees(-np.arctan2(dz, np.sqrt(dx**2 + dy**2)))
     alpha_deg[N-1] = alpha_deg[N-2]
     alpha_deg[0] = alpha_deg[1] # Riempimento bordo iniziale
 
@@ -45,6 +44,7 @@ def _simulate(df, path_to_las:str):
 
 
 def main(): #To call main paste: python main_matrix.py --gates data/pointsLocationFirstCourse.csv --numTrajectories 200
+    NUMPOINTS = 3_000
     parser = argparse.ArgumentParser(description="A script that accepts keyword-like arguments.")
     #paths for loading and saving data (REQUIRED)
     parser.add_argument("--gates", type=str, help="gates_path", required=True)
@@ -86,7 +86,16 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     listDf, risSim = [], []
     maxX, maxY, minX, minY = -np.inf, -np.inf, np.inf, np.inf
 
-    listDf = [loader.prepareTrajectories(numPoints=3_000, gates=traj) for traj in newTraj]
+    listDf = [loader.prepareTrajectories(numPoints=NUMPOINTS, gates=traj) for traj in newTraj]
+    len_trajectories = []
+    for i in range(len(listDf)):
+        len_traj = 0
+        for j in range(1, len(listDf[i])):
+            dx = listDf[i]["Est [m]"].values[j] - listDf[i]["Est [m]"].values[j-1]
+            dy = listDf[i]["Nord [m]"].values[j] - listDf[i]["Nord [m]"].values[j-1]
+            len_traj += np.sqrt(dx**2 + dy**2)
+        len_trajectories.append(len_traj)
+    
 
     maxX, maxY = max(df["Est [m]"].max()  for df in listDf), max(df["Nord [m]"].max() for df in listDf)
     minX, minY = min(df["Est [m]"].min()  for df in listDf), min(df["Nord [m]"].min() for df in listDf)
@@ -105,7 +114,7 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     
 
     # Post processing of the results
-    weight = 0
+    weight = 0.5
     haz_coeff_sim = [(np.abs(res['F_lat'])-np.min(np.abs(res['F_lat']))) / (np.max(np.abs(res['F_lat'])) - np.min(np.abs(res['F_lat']))) for res in risSim]
     # haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas]
 
@@ -159,10 +168,11 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
 
     haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas_der_sw]
 
+    haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas]
     
     # for alpha in alphas_der:
-
-    haz_coeff = weight * haz_coeff_sim + (1-weight) * haz_coeff_incl
+    weight = 0.5
+    haz_coeff = weight * np.array(haz_coeff_sim) + (1-weight) * np.array(haz_coeff_incl)
 
     # Create a river matrix with the cells of 1 meter x 1 meter and fill it with the hazard coefficients (for visualization purposes)
         
@@ -200,7 +210,24 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     riverMatrix = np.where(mask, convolve(riverMatrix * reliabilityMatrix, kernel, mode='constant', cval=0) /  np.where(rel_sum > 0, rel_sum, 1), riverMatrix)
     reliabilityMatrix = np.where(mask, rel_sum, reliabilityMatrix)
 
-    # TODO: aggiungere i gate alla river matrix
+    #CALCOLO TANGENTI VIE DI FUGA
+    tangents = []
+    for i in range(len(risSim)):
+        len_traj = len_trajectories[i]
+        min_p = -5*(NUMPOINTS/len_traj)
+        max_p = 2*(NUMPOINTS/len_traj)
+        haz_coeff = weight * haz_coeff_sim[i] + (1-weight) * haz_coeff_incl[i]
+        lim_var = np.percentile(haz_coeff, 99)
+        idxs = np.argwhere(haz_coeff >= lim_var)
+        for max_idx in idxs:
+
+            #max_idx = np.argmax(haz_coeff)
+            for p in range(int(min_p), int(max_p)+1):
+                idx = max(0, min(len(haz_coeff)-1, max_idx + p))
+                tangent = np.arctan2(listDf[i]["Nord [m]"].values[idx] - listDf[i]["Nord [m]"].values[idx-1], listDf[i]["Est [m]"].values[idx] - listDf[i]["Est [m]"].values[idx-1])
+                tangents.append((listDf[i]["Nord [m]"].values[idx], listDf[i]["Est [m]"].values[idx], tangent))
+    #FINE VIE DI FUGA    
+
     print("Plotting the river matrix...")
     print(f"Max X: {maxX}, Min X: {minX}, Max Y: {maxY}, Min Y: {minY}")
     print(f"Difference x: {maxX - minX}, Difference y: {maxY - minY}")
@@ -214,6 +241,42 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     plt.figure(figsize=(8, 8))
     plt.imshow(np.ma.masked_equal(riverMatrix.T, 0), cmap=cmap, origin='lower')
     plt.colorbar(label='Hazard coefficient')
+
+    # Overlay the first 10 escape tangents on the river matrix.
+    # tangents[i] = (Nord, Est, angle); angle = arctan2(dNord, dEst) in real-world coords.
+    sx = (W - 1) / (maxX - minX + 1e-9)   # Est [m]  -> column (Est) index scale
+    sy = (H - 1) / (maxY - minY + 1e-9)   # Nord [m] -> row (Nord) index scale
+    t = np.array([-20, 20])   # half-length of each drawn tangent, in meters
+    for nord, est, angle in tangents:
+        est_idx  = (est  - minX) * sx
+        nord_idx = (nord - minY) * sy
+        # displayed image is riverMatrix.T: plot-x = Nord index, plot-y = Est index
+        plt.plot(nord_idx + np.sin(angle) * sy * t, est_idx  + np.cos(angle) * sx * t, color='blue', linewidth=1.5)
+        plt.plot(nord_idx, est_idx, marker='o', color='blue', markersize=4)
+
+
+    # Overlay the slope borders recovered from the --path_to_las point cloud.
+    # The .las is already cropped to the slope, so the cloud's outer outline is the border.
+    border_est, border_nord = obtain_slope_borders(args.path_to_las)
+    border_x = (border_nord - minY) * sy   # plot-x = Nord index
+    border_y = (border_est  - minX) * sx   # plot-y = Est index
+    plt.scatter(border_x, border_y, color='black', s=2, marker='.',
+                zorder=4, label='Slope border')
+
+    # Overlay the gates (purple) recovered from the --gates file.
+    # Drop the synthetic fakeInit/fakeFinal rows so only the real gates are shown.
+    real_gates = loader.gates.drop(index=['fakeInit', 'fakeFinal'], errors='ignore')
+    plt.scatter((real_gates["Nord [m]"].values - minY) * sy, (real_gates["Est [m]"].values  - minX) * sx, color='purple', s=50, marker='s',
+                edgecolors='black', linewidths=0.5, zorder=5, label='Gates')
+
+    # Mark the start and end of the trajectory (first/last interpolated points).
+    start, end = listDf[0].iloc[0], listDf[0].iloc[-1]
+    plt.scatter((start["Nord [m]"] - minY) * sy, (start["Est [m]"]  - minX) * sx, color='lime', s=120, marker='*',
+                edgecolors='black', linewidths=0.5, zorder=6, label='Start')
+    plt.scatter((end["Nord [m]"] - minY) * sy, (end["Est [m]"]  - minX) * sx, color='cyan', s=120, marker='X',
+                edgecolors='black', linewidths=0.5, zorder=6, label='End')
+    plt.legend(loc='best')
+
     plt.savefig("river_matrix.png", bbox_inches='tight', format='png')
 
     plt.figure(figsize=(8, 8))
@@ -224,6 +287,7 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     #show results
     plt.show()
     
+
 if __name__ == "__main__":
     SEED = 23
     assert set_seed(SEED) == SEED, "Error setting the seed"

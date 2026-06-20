@@ -39,6 +39,12 @@ import os
 
 import numpy as np
 from scipy.spatial import cKDTree
+from scipy.ndimage import (
+    binary_fill_holes,
+    binary_closing,
+    binary_erosion,
+    label,
+)
 
 import laspy
 
@@ -109,6 +115,66 @@ def load_surface_points(las_path, bbox, margin):
             "Check that the .las and the trajectory share the same CRS."
         )
     return np.concatenate(kept, axis=0)
+
+
+def obtain_slope_borders(las_path, grid_res=2.0):
+    """Recover the outline (borders) of the ski slope from a .las point cloud.
+
+    The .las is assumed to be already cropped to the slope, so the border of the
+    3D reconstruction *is* the slope border. The points are rasterised onto a
+    horizontal occupancy grid (X/Y in UTM32N); the grid is morphologically cleaned
+    (closing + hole filling, keeping the largest connected component) and the
+    one-cell-thick outline of the resulting region is returned as UTM32N
+    coordinates. Rasterising keeps memory bounded by the grid size regardless of
+    how many points the cloud holds.
+
+    Parameters
+    ----------
+    las_path : str
+        Path to the surface .las (X/Y in UTM32N, matching the trajectory CRS).
+    grid_res : float
+        Size [m] of the occupancy-grid cells. Larger values bridge gaps in a
+        sparse cloud at the cost of border precision.
+
+    Returns
+    -------
+    est, nord : (B,) arrays
+        UTM32N easting/northing of the border cells.
+    """
+    with laspy.open(las_path) as reader:
+        hdr = reader.header
+        xmin, ymin, xmax, ymax = hdr.x_min, hdr.y_min, hdr.x_max, hdr.y_max
+
+    nx = int(np.ceil((xmax - xmin) / grid_res)) + 1
+    ny = int(np.ceil((ymax - ymin) / grid_res)) + 1
+    occ = np.zeros((nx, ny), dtype=bool)
+
+    with laspy.open(las_path) as reader:
+        for chunk in reader.chunk_iterator(8_000_000):
+            ix = ((np.asarray(chunk.x) - xmin) / grid_res).astype(np.intp)
+            iy = ((np.asarray(chunk.y) - ymin) / grid_res).astype(np.intp)
+            np.clip(ix, 0, nx - 1, out=ix)
+            np.clip(iy, 0, ny - 1, out=iy)
+            occ[ix, iy] = True
+
+    # Consolidate the rasterised cloud into a solid region.
+    occ = binary_closing(occ, structure=np.ones((3, 3), dtype=bool))
+    occ = binary_fill_holes(occ)
+
+    # Keep only the largest connected component (drop stray specks off the slope).
+    lab, n = label(occ)
+    if n > 1:
+        sizes = np.bincount(lab.ravel())
+        sizes[0] = 0
+        occ = lab == sizes.argmax()
+
+    # One-cell-thick outline = region minus its erosion.
+    boundary = occ & ~binary_erosion(occ)
+
+    bx, by = np.nonzero(boundary)
+    est = xmin + bx * grid_res
+    nord = ymin + by * grid_res
+    return est, nord
 
 
 def plane_gradient(points):
