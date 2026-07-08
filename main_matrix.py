@@ -14,6 +14,73 @@ from trajectory.tangent_derivative import obtain_inclination, obtain_slope_borde
 from tqdm.contrib.concurrent import process_map
 from scipy.ndimage import convolve
 
+def get_bump_coeff(alfa, tan, der_x, der_y, sw=None, tol:float=1e-3):
+
+    if sw is None:
+        sw:int = int(0.01*len(alfa))  
+    sw:int = ((sw - sw % 2) // 2) if sw > 10 else 15
+        
+    #calculate vector normal to the tangent vector
+    
+    normal = np.concatenate([tan[:, 1::-1] * np.array([-1, 1]), tan[:, 2:3]], axis=1)
+    
+    gamma = np.degrees(np.atan((der_x * normal[:, 0] + der_y * normal[:, 1])/(np.linalg.norm(normal, axis=1) + 1e-9)))
+
+    der_gamma = np.gradient(gamma)
+    
+    der_sw_gamma = np.zeros_like(der_gamma)
+
+    for j in range(sw, len(der_gamma)-sw):
+        der_sw_gamma[j] = np.mean(der_gamma[j-sw:j+sw])
+        
+    for j in range(sw):
+        der_sw_gamma[j] = np.mean(der_gamma[0:j+sw])
+            
+    for j in range(len(der_gamma)-sw, len(der_gamma)):
+        der_sw_gamma[j] = np.mean(der_gamma[j-sw:len(der_gamma)])
+
+    #COUNT NUMBER OF ZEROS IN SMOOTHED DERIVATIVE, in a sliding window
+    count_dgamma_zeros = np.zeros_like(der_sw_gamma)
+    for j in range(sw, len(der_gamma)-sw):        
+        count_dgamma_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_gamma[j-sw:j+sw]) < tol, 1, 0), prepend=0) == 1)
+        
+    for j in range(sw):
+        count_dgamma_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_gamma[0:j+sw]) < tol, 1, 0), prepend=0) == 1)
+            
+    for j in range(len(der_gamma)-sw, len(der_gamma)):
+        count_dgamma_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_gamma[j-sw:len(der_gamma)]) < tol, 1, 0), prepend=0) == 1)
+    
+
+    #Now do the same on alfa
+    der_alfa = np.gradient(alfa)
+
+    der_sw_alfa = np.zeros_like(der_alfa)
+
+    for j in range(sw, len(der_alfa)-sw):
+        der_sw_alfa[j] = np.mean(der_alfa[j-sw:j+sw])
+        
+    for j in range(sw):
+        der_sw_alfa[j] = np.mean(der_alfa[0:j+sw])
+            
+    for j in range(len(der_alfa)-sw, len(der_alfa)):
+        der_sw_alfa[j] = np.mean(der_alfa[j-sw:len(der_alfa)])
+    
+    count_dalfa_zeros = np.zeros_like(der_sw_alfa)
+    for j in range(sw, len(der_alfa)-sw):        
+        count_dalfa_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_alfa[j-sw:j+sw]) < tol, 1, 0), prepend=0) == 1)
+    
+        
+    for j in range(sw):
+        count_dalfa_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_alfa[0:j+sw]) < tol, 1, 0), prepend=0) == 1)
+            
+    for j in range(len(der_alfa)-sw, len(der_alfa)):
+        count_dalfa_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_alfa[j-sw:len(der_alfa)]) < tol, 1, 0), prepend=0) == 1)
+    
+    haz_coeff = count_dalfa_zeros+count_dgamma_zeros
+
+    haz_coeff = (haz_coeff-np.min(haz_coeff))/(np.max(haz_coeff)-np.min(haz_coeff) + 1e-9)
+
+    return haz_coeff
 
 def set_seed(seed:int) -> int:
     np.random.seed(seed)
@@ -21,7 +88,8 @@ def set_seed(seed:int) -> int:
     return seed
 
 def return_inclination(x_utm:np.ndarray, y_utm:np.ndarray, z_traj:np.ndarray, path_to_las:str):    
-    alpha_deg = -obtain_inclination(x_utm,y_utm,path_to_las)
+    alpha_deg, grads, real_z = obtain_inclination(x_utm,y_utm,path_to_las)
+    alpha_deg = -alpha_deg
     N = len(x_utm)
     
     if alpha_deg.shape[0] != N or np.isnan(alpha_deg).any():
@@ -34,17 +102,13 @@ def return_inclination(x_utm:np.ndarray, y_utm:np.ndarray, z_traj:np.ndarray, pa
     alpha_deg[N-1] = alpha_deg[N-2]
     alpha_deg[0] = alpha_deg[1] # Riempimento bordo iniziale
 
-    return alpha_deg
+    return alpha_deg, grads, real_z
         
-
 def _simulate(df, path_to_las:str):
-    alphas = return_inclination(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, path_to_las)
-    return esegui_simulazione(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, alfa=alphas), alphas
+    alphas, grads, real_z = return_inclination(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, path_to_las)
+    return esegui_simulazione(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, alfa=alphas), alphas, grads, real_z
 
-
-
-def main(): #To call main paste: python main_matrix.py --gates data/pointsLocationFirstCourse.csv --numTrajectories 200
-    NUMPOINTS = 3_000
+def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gates data/pointsLocationFirstCourse.csv --numTrajectories 200
     parser = argparse.ArgumentParser(description="A script that accepts keyword-like arguments.")
     #paths for loading and saving data (REQUIRED)
     parser.add_argument("--gates", type=str, help="gates_path", required=True)
@@ -86,7 +150,7 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     listDf, risSim = [], []
     maxX, maxY, minX, minY = -np.inf, -np.inf, np.inf, np.inf
 
-    listDf = [loader.prepareTrajectories(numPoints=NUMPOINTS, gates=traj) for traj in newTraj]
+    listDf = [loader.prepareTrajectories(numPoints=num_points, gates=traj) for traj in newTraj]
     len_trajectories = []
     for i in range(len(listDf)):
         len_traj = 0
@@ -109,8 +173,12 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
         desc="Simulating",
         unit="traj",
     )
-    risSim, alphas  = [res[0] for res in risSim], [res[1] for res in risSim]  # Extract the simulation results and the alphas
+    risSim, alphas, grads, real_z  = [res[0] for res in risSim], [res[1] for res in risSim], [res[2] for res in risSim], [res[3] for res in risSim]  # Extract the simulation results and the alphas
 
+    haz_bump_coeffs = []
+    
+    for i in range(len(alphas)):
+        haz_bump_coeffs.append(get_bump_coeff(alphas[i], risSim[i]['tan'],grads[i][:,0], grads[i][:,1], sw=30))
     
 
     # Post processing of the results
@@ -122,7 +190,7 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     alphas_der_sw = []
 
     for i in range(len(alphas)):
-        alpha_der = np.abs(np.gradient(alphas[i]))
+        alpha_der = np.gradient(alphas[i])#np.abs(np.gradient(alphas[i]))
         alpha_der_sw = np.zeros_like(alpha_der)
         
         for j in range(15, len(alpha_der)-15):
@@ -164,6 +232,37 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     plt.grid()
     plt.tight_layout()
 
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(grads[0][:,0], label="Inclination w.r.t. X", linestyle='-')
+    plt.plot(grads[0][:,1], label="Inclination w.r.t. Y", linestyle='-')
+    plt.xlabel("Point index")
+    plt.ylabel("Inclination (degrees)")
+    plt.title("Surface Inclination Along Trajectory")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(np.degrees(np.arccos(grads[0][:,0])), label="Inclination w.r.t. X", linestyle='--')
+    plt.plot(180-np.degrees(np.arccos(grads[0][:,1])), label="Inclination w.r.t. Y", linestyle='--')
+    plt.xlabel("Point index")
+    plt.ylabel("Inclination (degrees)")
+    plt.title("Surface Inclination Along Trajectory")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+
+    print(real_z[0])
+    plt.figure(figsize=(10, 4))
+    plt.plot(real_z[0], label="Inclination w.r.t. X", linestyle='-')
+    plt.xlabel("Point index")
+    plt.ylabel("Inclination (degrees)")
+    plt.title("Surface Inclination Along Trajectory")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    
     plt.show()
 
     haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas_der_sw]
@@ -172,7 +271,7 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     
     # for alpha in alphas_der:
     weight = 0.5
-    haz_coeff = weight * np.array(haz_coeff_sim) + (1-weight) * np.array(haz_coeff_incl)
+    haz_coeff = haz_bump_coeffs #weight * np.array(haz_coeff_sim) + (1-weight) * np.array(haz_coeff_incl)
 
     # Create a river matrix with the cells of 1 meter x 1 meter and fill it with the hazard coefficients (for visualization purposes)
         
@@ -214,8 +313,8 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     tangents = []
     for i in range(len(risSim)):
         len_traj = len_trajectories[i]
-        min_p = -5*(NUMPOINTS/len_traj)
-        max_p = 2*(NUMPOINTS/len_traj)
+        min_p = -5*(num_points/len_traj)
+        max_p = 2*(num_points/len_traj)
         haz_coeff = weight * haz_coeff_sim[i] + (1-weight) * haz_coeff_incl[i]
         lim_var = np.percentile(haz_coeff, 99)
         idxs = np.argwhere(haz_coeff >= lim_var)
@@ -244,15 +343,16 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
 
     # Overlay the first 10 escape tangents on the river matrix.
     # tangents[i] = (Nord, Est, angle); angle = arctan2(dNord, dEst) in real-world coords.
+    #TODO: DECOMMENT
     sx = (W - 1) / (maxX - minX + 1e-9)   # Est [m]  -> column (Est) index scale
     sy = (H - 1) / (maxY - minY + 1e-9)   # Nord [m] -> row (Nord) index scale
-    t = np.array([-20, 20])   # half-length of each drawn tangent, in meters
-    for nord, est, angle in tangents:
-        est_idx  = (est  - minX) * sx
-        nord_idx = (nord - minY) * sy
-        # displayed image is riverMatrix.T: plot-x = Nord index, plot-y = Est index
-        plt.plot(nord_idx + np.sin(angle) * sy * t, est_idx  + np.cos(angle) * sx * t, color='blue', linewidth=1.5)
-        plt.plot(nord_idx, est_idx, marker='o', color='blue', markersize=4)
+    # t = np.array([-20, 20])   # half-length of each drawn tangent, in meters
+    # for nord, est, angle in tangents:
+    #     est_idx  = (est  - minX) * sx
+    #     nord_idx = (nord - minY) * sy
+    #     # displayed image is riverMatrix.T: plot-x = Nord index, plot-y = Est index
+    #     plt.plot(nord_idx + np.sin(angle) * sy * t, est_idx  + np.cos(angle) * sx * t, color='blue', linewidth=1.5)
+    #     plt.plot(nord_idx, est_idx, marker='o', color='blue', markersize=4)
 
 
     # Overlay the slope borders recovered from the --path_to_las point cloud.
@@ -289,6 +389,7 @@ def main(): #To call main paste: python main_matrix.py --gates data/pointsLocati
     
 
 if __name__ == "__main__":
-    SEED = 23
+    SEED:int = 23
+    NUM_POINTS:int = 3_000
     assert set_seed(SEED) == SEED, "Error setting the seed"
     main()

@@ -238,6 +238,7 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
         'F_cent': F_cent_vec,
         'F_net': F_net_vec,
         'R': R_vec,
+        'tan': T_hat,
     }
 
     # Estraiamo i dati dal dizionario

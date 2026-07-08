@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 
+import pandas as pd
 import numpy as np
 from scipy.spatial import cKDTree
 from scipy.ndimage import (
@@ -48,6 +49,8 @@ from scipy.ndimage import (
 
 import laspy
 
+
+from scipy.ndimage import convolve
 
 def load_trajectory(json_path):
     """Load the GNSS trajectory as horizontal positions + reference height.
@@ -234,10 +237,16 @@ def obtain_inclination(x, y, file_source):
     xy = np.stack([x, y], axis=1)
     bbox = (xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max())
     surface = load_surface_points(file_source, bbox, 10.0)
+    der, grads = tangent_derivatives(xy, surface, 5.0, 5)
 
-    der, _ = tangent_derivatives(xy, surface, 5.0, 5)
+    # Sample the surface height at each trajectory point via nearest neighbour.
+    # An exact (x, y) merge never matches: the interpolated trajectory points do
+    # not coincide with discrete LAS points, so we look up the closest one.
+    tree = cKDTree(surface[:, :2])
+    _, nn_idx = tree.query(xy, k=1)
+    z_coordinates = surface[nn_idx, 2]
 
-    return np.degrees(np.arctan(der))
+    return np.degrees(np.arctan(der)), grads, z_coordinates
 
 def main():
     parser = argparse.ArgumentParser(
