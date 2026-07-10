@@ -30,26 +30,30 @@ def get_bump_coeff(alfa, tan, der_x, der_y, sw=None, tol:float=1e-3):
     
     der_sw_gamma = np.zeros_like(der_gamma)
 
-    for j in range(sw, len(der_gamma)-sw):
-        der_sw_gamma[j] = np.mean(der_gamma[j-sw:j+sw])
-        
-    for j in range(sw):
-        der_sw_gamma[j] = np.mean(der_gamma[0:j+sw])
-            
-    for j in range(len(der_gamma)-sw, len(der_gamma)):
-        der_sw_gamma[j] = np.mean(der_gamma[j-sw:len(der_gamma)])
+    N = len(der_gamma)
 
-    #COUNT NUMBER OF ZEROS IN SMOOTHED DERIVATIVE, in a sliding window
-    count_dgamma_zeros = np.zeros_like(der_sw_gamma)
-    for j in range(sw, len(der_gamma)-sw):        
-        count_dgamma_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_gamma[j-sw:j+sw]) < tol, 1, 0), prepend=0) == 1)
-        
-    for j in range(sw):
-        count_dgamma_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_gamma[0:j+sw]) < tol, 1, 0), prepend=0) == 1)
-            
-    for j in range(len(der_gamma)-sw, len(der_gamma)):
-        count_dgamma_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_gamma[j-sw:len(der_gamma)]) < tol, 1, 0), prepend=0) == 1)
+    # cumsum con 0 davanti: c[k] = somma di der_gamma[:k]
+    c = np.concatenate(([0.0], np.cumsum(der_gamma)))
+
+    # per ogni j, la finestra è [max(0, j-sw), min(N, j+sw)]
+    j = np.arange(N)
     
+    der_sw_gamma = (c[np.minimum(j + sw, N)] - c[np.maximum(j - sw, 0)]) / (np.minimum(j + sw, N) - np.maximum(j - sw, 0))
+
+    N = len(der_sw_gamma)
+
+    # 1) segno "robusto": tratta i quasi-zeri come 0 così non generi falsi cambi (0 → +) o (+ → 0) su un unico crossing reale
+    sign = np.sign(der_sw_gamma)
+    sign[np.abs(der_sw_gamma) < tol] = 0
+
+    # 2) cambio di segno stretto tra i e i+1: solo + <-> - (0 non conta)
+    # 3) cumsum con uno 0 davanti → c[k] = numero di crossing prima dell'indice k
+    c = np.concatenate(([0], np.cumsum(((sign[:-1] * sign[1:]) < 0 ).astype(np.int64))))   # shape (N,)
+
+    # 4) conteggio in finestra [j-sw, j+sw], con clipping automatico sui bordi
+    j = np.arange(N)
+    count_dgamma_zeros = (c[np.minimum(j + sw, N - 1)] - c[np.maximum(j - sw, 0)]).astype(float)
+
 
     #Now do the same on alfa
     der_alfa = np.gradient(alfa)
@@ -65,16 +69,26 @@ def get_bump_coeff(alfa, tan, der_x, der_y, sw=None, tol:float=1e-3):
     for j in range(len(der_alfa)-sw, len(der_alfa)):
         der_sw_alfa[j] = np.mean(der_alfa[j-sw:len(der_alfa)])
     
-    count_dalfa_zeros = np.zeros_like(der_sw_alfa)
-    for j in range(sw, len(der_alfa)-sw):        
-        count_dalfa_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_alfa[j-sw:j+sw]) < tol, 1, 0), prepend=0) == 1)
+    N = len(der_sw_alfa)
+
+    mask = (np.abs(der_sw_alfa) < tol).astype(np.int64)
+
+    # "start interno alla finestra" = posizioni i>a con mask[i]=1 & mask[i-1]=0
+    # → si contano sommando sulla shifted-diff nell'intervallo (a, b)
+    # "start di bordo" = mask[a]=1 (perché il tuo prepend=0 lo tratta come start)
+
+    # transizioni 0->1 nell'array intero, riferite alla posizione di destinazione
+    inner_starts = np.zeros(N, dtype=np.int64)
+    inner_starts[1:] = ((mask[1:] == 1) & (mask[:-1] == 0)).astype(np.int64)
+
+    c = np.concatenate(([0], np.cumsum(inner_starts)))
+
+    j = np.arange(N)
+    # start interni nella finestra (a, b): c[b] - c[a+1]... ma serve gestire a==b
+    # più semplice: start interni in [a+1, b) = c[b] - c[a+1]
+    # più il bordo: mask[a] == 1 (conta come "0->1" per via del prepend=0)
+    count_dalfa_zeros = (c[np.minimum(j + sw, N)] - c[np.minimum(np.maximum(j - sw, 0) + 1, N)] + mask[np.maximum(j - sw, 0)]).astype(float)    
     
-        
-    for j in range(sw):
-        count_dalfa_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_alfa[0:j+sw]) < tol, 1, 0), prepend=0) == 1)
-            
-    for j in range(len(der_alfa)-sw, len(der_alfa)):
-        count_dalfa_zeros[j] += np.sum(np.diff(np.where(np.abs(der_sw_alfa[j-sw:len(der_alfa)]) < tol, 1, 0), prepend=0) == 1)
     
     haz_coeff = count_dalfa_zeros+count_dgamma_zeros
 
@@ -132,11 +146,10 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
 
     args = parser.parse_args()
 
-    gates_path = args.gates
-    print(f"Gates path: {gates_path}")
+    print(f"Gates path: {args.gates}")
 
     # Load gates and generate new trajectories
-    loader = trajectoryLoader(gates_path)
+    loader = trajectoryLoader(args.gates)
     os.makedirs(os.path.join(args.output, "simulated_trajectories"), exist_ok=True)
     newTraj = loader.generateNewTrajectories(numTrajectories=args.numTrajectories, maxDistanceMeters=args.maxDistanceMeters, startLeft=args.startLeft)
     # loader.saveNewTrajectories(newTraj, os.path.join(args.output, "simulated_trajectories.csv"))
@@ -182,8 +195,8 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
     
 
     # Post processing of the results
-    weight = 0.5
     haz_coeff_sim = [(np.abs(res['F_lat'])-np.min(np.abs(res['F_lat']))) / (np.max(np.abs(res['F_lat'])) - np.min(np.abs(res['F_lat']))) for res in risSim]
+    
     # haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas]
 
     alphas_der = []
@@ -204,74 +217,14 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
         
         alphas_der_sw.append(alpha_der_sw)
         alphas_der.append(alpha_der)
-    
-    plt.figure(figsize=(10, 4))
-    plt.plot(alphas[0], label="Inclination (degrees)")
-    plt.xlabel("Point index")
-    plt.ylabel("Inclination (degrees)")
-    plt.title("Surface Inclination Along Trajectory")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-
-    plt.figure(figsize=(10, 4))
-    plt.plot(alphas_der[0], label="Inclination derivative (degrees)", linestyle='--')
-    plt.xlabel("Point index")
-    plt.ylabel("Inclination derivative (degrees)")
-    plt.title("Surface Inclination Derivative Along Trajectory")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-
-    plt.figure(figsize=(10, 4))
-    plt.plot(alphas_der_sw[0], label="Inclination derivative (degrees)", linestyle='--')
-    plt.xlabel("Point index")
-    plt.ylabel("Inclination derivative (degrees)")
-    plt.title("Surface Inclination Derivative Along Trajectory")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-
-
-    plt.figure(figsize=(10, 4))
-    plt.plot(grads[0][:,0], label="Inclination w.r.t. X", linestyle='-')
-    plt.plot(grads[0][:,1], label="Inclination w.r.t. Y", linestyle='-')
-    plt.xlabel("Point index")
-    plt.ylabel("Inclination (degrees)")
-    plt.title("Surface Inclination Along Trajectory")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-
-    plt.figure(figsize=(10, 4))
-    plt.plot(np.degrees(np.arccos(grads[0][:,0])), label="Inclination w.r.t. X", linestyle='--')
-    plt.plot(180-np.degrees(np.arccos(grads[0][:,1])), label="Inclination w.r.t. Y", linestyle='--')
-    plt.xlabel("Point index")
-    plt.ylabel("Inclination (degrees)")
-    plt.title("Surface Inclination Along Trajectory")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-
-    print(real_z[0])
-    plt.figure(figsize=(10, 4))
-    plt.plot(real_z[0], label="Inclination w.r.t. X", linestyle='-')
-    plt.xlabel("Point index")
-    plt.ylabel("Inclination (degrees)")
-    plt.title("Surface Inclination Along Trajectory")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    
-    plt.show()
 
     haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas_der_sw]
 
     haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas]
     
     # for alpha in alphas_der:
-    weight = 0.5
-    haz_coeff = haz_bump_coeffs #weight * np.array(haz_coeff_sim) + (1-weight) * np.array(haz_coeff_incl)
+    weight = 1/3
+    haz_coeff = weight* np.array(haz_bump_coeffs) + weight * np.array(haz_coeff_sim) + weight * np.array(haz_coeff_incl)
 
     # Create a river matrix with the cells of 1 meter x 1 meter and fill it with the hazard coefficients (for visualization purposes)
         
@@ -308,20 +261,21 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
 
     riverMatrix = np.where(mask, convolve(riverMatrix * reliabilityMatrix, kernel, mode='constant', cval=0) /  np.where(rel_sum > 0, rel_sum, 1), riverMatrix)
     reliabilityMatrix = np.where(mask, rel_sum, reliabilityMatrix)
-
+#======================================================================================================
     #CALCOLO TANGENTI VIE DI FUGA
+#======================================================================================================
+
     tangents = []
     for i in range(len(risSim)):
         len_traj = len_trajectories[i]
         min_p = -5*(num_points/len_traj)
         max_p = 2*(num_points/len_traj)
-        haz_coeff = weight * haz_coeff_sim[i] + (1-weight) * haz_coeff_incl[i]
         lim_var = np.percentile(haz_coeff, 99)
         idxs = np.argwhere(haz_coeff >= lim_var)
         for max_idx in idxs:
 
             #max_idx = np.argmax(haz_coeff)
-            for p in range(int(min_p), int(max_p)+1):
+            for p in (int(min_p), int(max_p)+1):
                 idx = max(0, min(len(haz_coeff)-1, max_idx + p))
                 tangent = np.arctan2(listDf[i]["Nord [m]"].values[idx] - listDf[i]["Nord [m]"].values[idx-1], listDf[i]["Est [m]"].values[idx] - listDf[i]["Est [m]"].values[idx-1])
                 tangents.append((listDf[i]["Nord [m]"].values[idx], listDf[i]["Est [m]"].values[idx], tangent))
@@ -346,13 +300,13 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
     #TODO: DECOMMENT
     sx = (W - 1) / (maxX - minX + 1e-9)   # Est [m]  -> column (Est) index scale
     sy = (H - 1) / (maxY - minY + 1e-9)   # Nord [m] -> row (Nord) index scale
-    # t = np.array([-20, 20])   # half-length of each drawn tangent, in meters
-    # for nord, est, angle in tangents:
-    #     est_idx  = (est  - minX) * sx
-    #     nord_idx = (nord - minY) * sy
-    #     # displayed image is riverMatrix.T: plot-x = Nord index, plot-y = Est index
-    #     plt.plot(nord_idx + np.sin(angle) * sy * t, est_idx  + np.cos(angle) * sx * t, color='blue', linewidth=1.5)
-    #     plt.plot(nord_idx, est_idx, marker='o', color='blue', markersize=4)
+    t = np.array([-20, 20])   # half-length of each drawn tangent, in meters
+    for nord, est, angle in tangents:
+        est_idx  = (est  - minX) * sx
+        nord_idx = (nord - minY) * sy
+        # displayed image is riverMatrix.T: plot-x = Nord index, plot-y = Est index
+        plt.plot(nord_idx + np.sin(angle) * sy * t, est_idx  + np.cos(angle) * sx * t, color='blue', linewidth=1.5)
+        plt.plot(nord_idx, est_idx, marker='o', color='blue', markersize=4)
 
 
     # Overlay the slope borders recovered from the --path_to_las point cloud.
