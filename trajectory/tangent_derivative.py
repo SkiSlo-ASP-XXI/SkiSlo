@@ -180,6 +180,51 @@ def obtain_slope_borders(las_path, grid_res=2.0):
     return est, nord
 
 
+def sample_surface_z(x, y, las_path, search_radius=5.0, min_neighbours=5, margin=10.0):
+    """Surface elevation at arbitrary horizontal positions, read from the .las.
+
+    A local plane is fitted to the cloud points within `search_radius` of each
+    query position and evaluated there, so the height is interpolated rather than
+    snapped to the closest discrete LAS point (as the nearest-neighbour lookup in
+    `obtain_inclination` does).
+
+    The .las is cropped to the slope, so a position off the slope has no points
+    near it and returns NaN. Callers must treat NaN as "off the reconstructed
+    surface": a nearest-neighbour query would instead return the border point's
+    height, which is indistinguishable from a real reading.
+
+    Parameters
+    ----------
+    x, y : array-like    UTM32N easting/northing of the query positions.
+    las_path : str       Path to the surface .las (X/Y in UTM32N, Z = height).
+
+    Returns
+    -------
+    (N,) array of surface heights, NaN where the position is off the slope.
+    """
+    xy = np.column_stack([np.asarray(x, dtype=np.float64).ravel(),
+                          np.asarray(y, dtype=np.float64).ravel()])
+    bbox = (xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max())
+    surface = load_surface_points(las_path, bbox, margin + search_radius)
+    tree = cKDTree(surface[:, :2])
+
+    z = np.full(len(xy), np.nan)
+    for i, q in enumerate(xy):
+        idx = tree.query_ball_point(q, r=search_radius)
+        if len(idx) < min_neighbours:
+            continue
+        pts = surface[idx]
+        centre = pts[:, :2].mean(axis=0)
+        A = np.column_stack([pts[:, 0] - centre[0], pts[:, 1] - centre[1], np.ones(len(pts))])
+        try:
+            coeffs, *_ = np.linalg.lstsq(A, pts[:, 2], rcond=None)
+        except np.linalg.LinAlgError:
+            continue
+        # Plane is fitted in coordinates centred on the patch; evaluate it at q.
+        z[i] = coeffs[0] * (q[0] - centre[0]) + coeffs[1] * (q[1] - centre[1]) + coeffs[2]
+    return z
+
+
 def plane_gradient(points):
     """Least-squares fit z = a*x + b*y + c to a local patch; return (a, b).
 

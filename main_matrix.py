@@ -2,14 +2,15 @@ import argparse, random, os
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 
 from tqdm import tqdm
 
 from trajectory.trajectoryFromPorte import trajectoryLoader
 
 from skier_model_py.physical_model import esegui_simulazione
-
-from trajectory.tangent_derivative import obtain_inclination, obtain_slope_borders
+from skier_model_py.fall_simulation import simula_caduta
+from trajectory.tangent_derivative import obtain_inclination, obtain_slope_borders, sample_surface_z
 
 from tqdm.contrib.concurrent import process_map
 from scipy.ndimage import convolve
@@ -261,6 +262,16 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
 
     riverMatrix = np.where(mask, convolve(riverMatrix * reliabilityMatrix, kernel, mode='constant', cval=0) /  np.where(rel_sum > 0, rel_sum, 1), riverMatrix)
     reliabilityMatrix = np.where(mask, rel_sum, reliabilityMatrix)
+    
+    # Building the reverse mapping
+    reverseMapping = dict()
+    for i, (x, y) in enumerate(zip(xs, ys)):
+        for xi, yi in zip(x,y):
+            if (xi, yi) not in reverseMapping:
+                reverseMapping[(xi, yi)] = set()
+            reverseMapping[(xi, yi)].add(i)
+        
+        
 #======================================================================================================
     #CALCOLO TANGENTI VIE DI FUGA
 #======================================================================================================
@@ -270,13 +281,13 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
         len_traj = len_trajectories[i]
         min_p = -5*(num_points/len_traj)
         max_p = 2*(num_points/len_traj)
-        lim_var = np.percentile(haz_coeff, 99)
-        idxs = np.argwhere(haz_coeff >= lim_var)
-        for max_idx in idxs:
-
+        lim_var = np.percentile(haz_coeff[i], 99)
+        idxs = np.argwhere(haz_coeff[i] >= lim_var)
+        for max_idx in idxs:            
             #max_idx = np.argmax(haz_coeff)
+            # max_idx = np.sum(max_idx)[0]
             for p in (int(min_p), int(max_p)+1):
-                idx = max(0, min(len(haz_coeff)-1, max_idx + p))
+                idx = max(0, min(len(haz_coeff[i])-1, max_idx + p))
                 tangent = np.arctan2(listDf[i]["Nord [m]"].values[idx] - listDf[i]["Nord [m]"].values[idx-1], listDf[i]["Est [m]"].values[idx] - listDf[i]["Est [m]"].values[idx-1])
                 tangents.append((listDf[i]["Nord [m]"].values[idx], listDf[i]["Est [m]"].values[idx], tangent))
     #FINE VIE DI FUGA    
@@ -340,7 +351,96 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
     
     #show results
     plt.show()
+
+
+    max_HC = np.argmax(haz_coeff) #[idx_traiettoria, indx_punto_in_traiettoria]
+    max_HC = (max_HC // haz_coeff.shape[1], max_HC % haz_coeff.shape[1])  # Convert flat index to 2D index
+    max_HC_x = xs[max_HC[0]][max_HC[1]]
+    max_HC_y = ys[max_HC[0]][max_HC[1]]
+
+    trajectories_selected = reverseMapping.get((max_HC_x, max_HC_y), set()) 
     
+    max_HC_x_continous = int(max_HC_x * (maxX - minX + 1e-9) / (W - 1) + minX)
+    max_HC_y_continous = int(max_HC_y * (maxY - minY + 1e-9) / (H - 1) + minY)
+    
+    t = np.arange(100)   # samples along each tangent ray, in metres from the trajectory
+    max_HC_tangents = []   # (traj index, point index, tangent angle) at the max-hazard cell
+    rays = []              # (x_tan, y_tan) ray samples, one entry per selected trajectory
+    fall_simulations = []
+
+    for i in sorted(trajectories_selected):
+        traj = listDf[i]
+        idx = int(np.argmin((traj["Est [m]"].values -max_HC_x_continous)**2+(traj["Nord [m]"].values -max_HC_y_continous)**2))
+        idx = max(1, min(len(traj)-2, idx))   # keep the central difference below in range
+        tangent = np.arctan2(traj["Nord [m]"].values[idx+1] - traj["Nord [m]"].values[idx-1], traj["Est [m]"].values[idx+1] - traj["Est [m]"].values[idx-1])
+        x_tan = traj['Est [m]'].values[idx] + np.cos(tangent) * t
+        y_tan = traj['Nord [m]'].values[idx] + np.sin(tangent) * t
+        z_tan = sample_surface_z(x_tan,
+                                 y_tan,
+                                 args.path_to_las)
+        v0 = risSim[i]['v'][idx]
+        rays.append((x_tan, y_tan, z_tan, v0))
+        max_HC_tangents.append((i, idx, tangent))
+        ret_val = simula_caduta(x_tan, y_tan, z_tan, v0)
+        fall_simulations.append(ret_val)
+
+    # Where a fallen skier ends up: each escape ray coloured by the speed along the slide,
+    # over the trajectories they branch off from and the slope outline from the .las.
+    fig, ax = plt.subplots(figsize=(9, 9))
+
+    # The .las is cropped to the piste, so the outline of the cloud is the slope border.
+    border_est, border_nord = obtain_slope_borders(args.path_to_las)
+    ax.scatter(border_est, border_nord, color='0.8', s=2, marker='.', zorder=1,
+               label='Slope border (.las)')
+
+    for n, i in enumerate(sorted(trajectories_selected)):
+        traj = listDf[i]
+        ax.plot(traj["Est [m]"].values, traj["Nord [m]"].values, color='0.45', lw=0.9, zorder=2,
+                label='Selected trajectories' if n == 0 else None)
+
+    v_max_kmh = max(ris['v'].max() for ris in fall_simulations) * 3.6
+
+    for ris, (x_tan, y_tan, z_tan, v0) in zip(fall_simulations, rays):
+        # simula_caduta integrates against 3D arc length and returns only stop_xyz, so map
+        # its s profile back onto the ray through the points it actually kept. The rounding
+        # mirrors _pulisci_traiettoria's, so mask_punti_validi lines up with these arrays.
+        keep = ris['mask_punti_validi']
+        xk, yk, zk = np.round(x_tan, 2)[keep], np.round(y_tan, 2)[keep], np.round(z_tan, 2)[keep]
+        s_k = np.concatenate(([0.0], np.cumsum(np.sqrt(np.diff(xk)**2 + np.diff(yk)**2 + np.diff(zk)**2))))
+        x_sol, y_sol = np.interp(ris['s'], s_k, xk), np.interp(ris['s'], s_k, yk)
+
+        # One coloured segment per step: the colour IS the speed there.
+        pts = np.column_stack([x_sol, y_sol]).reshape(-1, 1, 2)
+        lc = LineCollection(np.concatenate([pts[:-1], pts[1:]], axis=1), cmap='viridis',
+                            norm=plt.Normalize(0, v_max_kmh), linewidth=3, zorder=3)
+        lc.set_array(ris['v'][:-1] * 3.6)
+        ax.add_collection(lc)
+
+        ax.plot(x_sol[0], y_sol[0], marker='o', color='black', markersize=5, zorder=4)
+        ax.plot(ris['stop_xyz'][0], ris['stop_xyz'][1], marker='X' if ris['arrestato'] else 's',
+                color='red', markersize=11, markeredgecolor='black', zorder=5)
+
+    fig.colorbar(lc, ax=ax, label='Speed along the slide [km/h]', shrink=0.8)
+
+    # The markers are drawn per-ray, so label them once here instead.
+    handles, _ = ax.get_legend_handles_labels()
+    handles += [plt.Line2D([], [], ls='', marker='o', color='black', label='Fall point'),
+                plt.Line2D([], [], ls='', marker='X', color='red', markeredgecolor='black',
+                           label='Arrest (comes to rest)'),
+                plt.Line2D([], [], ls='', marker='s', color='red', markeredgecolor='black',
+                           label='Still moving at slope edge')]
+    ax.legend(handles=handles, loc='best', fontsize=8)
+
+    ax.scatter(max_HC_x_continous, max_HC_y_continous, color='magenta', s=150, marker='*',
+               edgecolors='black', linewidths=0.5, zorder=6)
+    ax.set_xlabel("Est [m]"); ax.set_ylabel("Nord [m]")
+    ax.set_title(f"Post-fall slides from the max-hazard cell (haz={haz_coeff[max_HC]:.3f})")
+    ax.set_aspect('equal', adjustable='datalim')
+    ax.grid(True, ls='--', alpha=0.4)
+    fig.savefig("fall_paths.png", bbox_inches='tight', format='png')
+    plt.show()
+
+
 
 if __name__ == "__main__":
     SEED:int = 23
