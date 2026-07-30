@@ -10,10 +10,177 @@ from trajectory.trajectoryFromPorte import trajectoryLoader
 
 from skier_model_py.physical_model import esegui_simulazione
 from skier_model_py.fall_simulation import simula_caduta
-from trajectory.tangent_derivative import obtain_inclination, obtain_slope_borders, sample_surface_z
+from trajectory.tangent_derivative import obtain_inclination, obtain_slope_borders, sample_surface_z, unit_tangents
 
 from tqdm.contrib.concurrent import process_map
 from scipy.ndimage import convolve
+
+"""Best-fit plane of a LAS/LAZ point cloud.
+ 
+The plane is returned in implicit form
+ 
+    a*x + b*y + c*z + d = 0,     with (a, b, c) unit and c >= 0 (upward normal)
+ 
+so that it plugs straight into the steepest-descent formula:
+ 
+    d_hat ~ ( a*c, b*c, -(a**2 + b**2) )
+"""
+ 
+from typing import Optional, Sequence, Union
+ 
+import numpy as np
+import laspy
+ 
+ 
+# ----------------------------------------------------------------------
+# core fit (works on an in-memory (N, 3) array)
+# ----------------------------------------------------------------------
+def _fit_plane_points(P: np.ndarray, mode: str = "orthogonal"):
+    """Return (normal, d, centroid) for the best-fit plane of P (N, 3)."""
+    centroid = P.mean(axis=0)
+    Q = P - centroid                      # centering is essential with UTM coords
+ 
+    if mode == "orthogonal":
+        # Total least squares: the normal is the direction of least variance,
+        # i.e. the right-singular vector of the smallest singular value.
+        _, _, Vt = np.linalg.svd(Q, full_matrices=False)
+        normal = Vt[-1]
+    elif mode == "vertical":
+        # Ordinary least squares on z:  z = p*x + q*y (+0, since centered)
+        A = Q[:, :2]
+        pq, *_ = np.linalg.lstsq(A, Q[:, 2], rcond=None)
+        normal = np.array([-pq[0], -pq[1], 1.0])
+        normal /= np.linalg.norm(normal)
+    else:
+        raise ValueError("mode must be 'orthogonal' or 'vertical'")
+ 
+    if normal[2] < 0:                     # keep the normal pointing up
+        normal = -normal
+ 
+    d = -float(normal @ centroid)
+    return normal, d, centroid
+ 
+ 
+def _residuals(P: np.ndarray, normal: np.ndarray, d: float):
+    """Signed orthogonal distances of P from the plane."""
+    return P @ normal + d
+ 
+ 
+# ----------------------------------------------------------------------
+# public API
+# ----------------------------------------------------------------------
+def find_plane(
+    las_path: str,
+    mode: str = "orthogonal",
+    classification: Optional[Union[int, Sequence[int]]] = None,
+    max_points: Optional[int] = 2_000_000,
+    trim_sigma: Optional[float] = None,
+    trim_iters: int = 3,
+    seed: int = 0,
+):
+    """Fit the plane that best approximates the point cloud stored in `las_path`.
+ 
+    Parameters
+    ----------
+    las_path : str
+        Path to a .las / .laz file.
+    mode : {'orthogonal', 'vertical'}
+        'orthogonal' minimises the mean squared *perpendicular* distance
+        (total least squares / PCA) -- the right choice if you want the plane
+        that geometrically fits the cloud best, and it is invariant to how the
+        cloud is rotated.
+        'vertical' minimises the mean squared error *along z*, i.e. it fits
+        z = p*x + q*y + r. This is the classic regression plane and is usually
+        what you want for a terrain surface, since the cloud is a height field
+        and the error you care about is an elevation error.
+    classification : int or sequence of int, optional
+        Keep only these LAS classification codes (e.g. 2 = ground).
+    max_points : int, optional
+        Random subsample above this size. The fit only needs second-order
+        moments, so a few 10^5 points already give a converged answer.
+    trim_sigma : float, optional
+        If given, refit `trim_iters` times, each time discarding points whose
+        residual exceeds `trim_sigma` robust sigmas (MAD-based). Cheap way to
+        stop trees / lifts / people from tilting the plane.
+    seed : int
+        Seed of the subsampling RNG (reproducibility).
+ 
+    Returns
+    -------
+    dict with keys
+        normal          (3,) unit normal (a, b, c), c >= 0
+        d               scalar, so that a*x + b*y + c*z + d = 0
+        coeffs          (a, b, c, d)
+        centroid        (3,) centroid of the points actually used
+        z_of_xy         callable (x, y) -> z on the plane
+        downhill        (3,) unit vector of steepest descent inside the plane
+        slope_deg       slope angle of the plane below horizontal
+        mse_orth        mean squared orthogonal distance  [m^2]
+        rmse_orth       sqrt of the above                 [m]
+        mse_vert        mean squared vertical (z) error   [m^2]
+        rmse_vert       sqrt of the above                 [m]
+        n_points        number of points used in the final fit
+    """
+    las = laspy.read(las_path)
+    P = np.column_stack([np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)]).astype(np.float64)
+ 
+    if classification is not None:
+        keep = np.isin(np.asarray(las.classification), np.atleast_1d(classification))
+        P = P[keep]
+ 
+    P = P[np.isfinite(P).all(axis=1)]
+    if len(P) < 3:
+        raise ValueError(f"{las_path}: only {len(P)} usable points, need at least 3.")
+ 
+    if max_points is not None and len(P) > max_points:
+        idx = np.random.default_rng(seed).choice(len(P), max_points, replace=False)
+        P = P[idx]
+ 
+    normal, d, centroid = _fit_plane_points(P, mode)
+ 
+    if trim_sigma is not None:
+        for _ in range(trim_iters):
+            r = _residuals(P, normal, d)
+            sigma = 1.4826 * np.median(np.abs(r - np.median(r)))   # robust std
+            if sigma <= 0:
+                break
+            keep = np.abs(r) <= trim_sigma * sigma
+            if keep.sum() < max(3, 0.1 * len(P)):
+                break
+            P = P[keep]
+            normal, d, centroid = _fit_plane_points(P, mode)
+ 
+    a, b, c = normal
+    r = _residuals(P, normal, d)
+    mse_orth = float(np.mean(r ** 2))
+    # vertical error: the orthogonal distance divided by cos(tilt) = |c|
+    mse_vert = float(np.mean((r / c) ** 2)) if abs(c) > 1e-12 else np.inf
+ 
+    h = a * a + b * b
+    if h > 1e-24:
+        downhill = np.array([a * c, b * c, -h]) / np.sqrt(h * (h + c * c))
+    else:
+        downhill = np.zeros(3)           # horizontal plane: no descent direction
+ 
+    return {
+        "normal": normal,
+        "d": float(d),
+        "coeffs": (float(a), float(b), float(c), float(d)),
+        "centroid": centroid,
+        "z_of_xy": lambda x, y: -(a * np.asarray(x) + b * np.asarray(y) + d) / c,
+        "downhill": downhill,
+        "slope_deg": float(np.degrees(np.arccos(np.clip(abs(c), -1, 1)))),
+        "mse_orth": mse_orth,
+        "rmse_orth": float(np.sqrt(mse_orth)),
+        "mse_vert": mse_vert,
+        "rmse_vert": float(np.sqrt(mse_vert)),
+        "n_points": int(len(P)),
+    }
+
+def downhill(a, b, c):
+    if c < 0: a, b, c = -a, -b, -c
+    v = np.array([a, b, -(a*a + b*b)/c])   # unnormalized, no square roots
+    return v / np.linalg.norm(v)
 
 def get_bump_coeff(alfa, tan, der_x, der_y, sw=None, tol:float=1e-3):
 
@@ -102,26 +269,208 @@ def set_seed(seed:int) -> int:
     random.seed(seed)
     return seed
 
-def return_inclination(x_utm:np.ndarray, y_utm:np.ndarray, z_traj:np.ndarray, path_to_las:str):    
-    alpha_deg, grads, real_z = obtain_inclination(x_utm,y_utm,path_to_las)
+def get_descent_direction(path_to_las:str):
+    plane_res = find_plane(path_to_las)
+    a,b,c = plane_res['normal']
+    desc_vect = downhill(a,b,c)
+    return desc_vect
+
+def fill_nan_nearest(a:np.ndarray) -> np.ndarray:
+    """Sostituisce i NaN/None con il valore valido più vicino (a parità di distanza vince quello a sinistra)."""
+    a = np.asarray(a, dtype=float)  # None -> NaN
+    valid = np.flatnonzero(~np.isnan(a))
+    if valid.size == 0:
+        return np.zeros_like(a)
+    if valid.size == a.size:
+        return a
+
+    idx = np.arange(a.size)
+    pos = np.searchsorted(valid, idx)
+    left = valid[np.clip(pos - 1, 0, valid.size - 1)]
+    right = valid[np.clip(pos, 0, valid.size - 1)]
+    nearest = np.where(np.abs(idx - left) <= np.abs(idx - right), left, right)
+    return a[nearest]
+
+def return_inclination(x_utm:np.ndarray, y_utm:np.ndarray, z_traj:np.ndarray, path_to_las:str, desc_vect: np.ndarray):
+    alpha_deg, grads, real_z = obtain_inclination(x_utm,y_utm,path_to_las, desc_vect)
     alpha_deg = -alpha_deg
     N = len(x_utm)
-    
-    if alpha_deg.shape[0] != N or np.isnan(alpha_deg).any():
-        alpha_deg = np.zeros(N)
-        for i in range(1, N-2):
-            dx = x_utm[i+1] - x_utm[i]
-            dy = y_utm[i+1] - y_utm[i]
-            dz = z_traj[i+1] - z_traj[i]
-            alpha_deg[i] = np.degrees(-np.arctan2(dz, np.sqrt(dx**2 + dy**2)))
+    alpha_deg = fill_nan_nearest(alpha_deg)
     alpha_deg[N-1] = alpha_deg[N-2]
     alpha_deg[0] = alpha_deg[1] # Riempimento bordo iniziale
 
     return alpha_deg, grads, real_z
         
-def _simulate(df, path_to_las:str):
-    alphas, grads, real_z = return_inclination(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, path_to_las)
-    return esegui_simulazione(df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values, alfa=alphas), alphas, grads, real_z
+# ======================================================================
+# TEMPORANEO: confronto fra i tre modi di calcolare alpha.
+# Da rimuovere una volta scelto il metodo definitivo.
+# ======================================================================
+def chord_direction(df) -> np.ndarray:
+    """Versore 3D dalla partenza all'arrivo della traiettoria.
+
+    È il `vec_ref` che physical_model.esegui_simulazione calcolava nel blocco ora
+    commentato (righe 69-72): una singola retta dalla prima all'ultima porta, che
+    non sa nulla del terreno locale ma solo della discesa complessiva. È immune
+    alla traslazione che esegui_simulazione applica alle coordinate (è una
+    differenza), quindi si può calcolare qui sul df originale.
+
+    La componente verticale conta: esegui_simulazione ne ricava gamma, quindi la z
+    dev'essere la stessa passata alla simulazione ("Quota Orto. [m]").
+    """
+    v = np.array([df["Est [m]"].values[-1]        - df["Est [m]"].values[0],
+                  df["Nord [m]"].values[-1]       - df["Nord [m]"].values[0],
+                  df["Quota Orto. [m]"].values[-1] - df["Quota Orto. [m]"].values[0]])
+    return v / (np.linalg.norm(v) + 1e-12)
+
+
+def alpha_from_direction(u, grads:np.ndarray) -> np.ndarray:
+    """alpha [deg] = -atan(grad(z) . u_hat), con u_hat orizzontale e unitario.
+
+    Non serve rifare il fit dei piani sul .las: `grads` (dz/dx, dz/dy per punto) è
+    già quello calcolato da tangent_derivatives, cambia solo la direzione su cui lo
+    si proietta. `u` può essere una singola direzione (2,)/(3,) oppure una per
+    punto (N, 2)/(N, 3); si usa solo la parte orizzontale, normalizzata qui perché
+    grad(z) . u_hat è la salita per metro percorso (= tan(alpha)) solo se u_hat è
+    orizzontale e unitario. La post-elaborazione replica return_inclination.
+    """
+    u = np.atleast_2d(np.asarray(u, dtype=float))[:, :2]
+    u = u / (np.linalg.norm(u, axis=1, keepdims=True) + 1e-12)
+    der = grads[:, 0] * u[:, 0] + grads[:, 1] * u[:, 1]
+
+    alpha_deg = -np.degrees(np.arctan(der))
+    alpha_deg = fill_nan_nearest(alpha_deg)
+    alpha_deg[-1] = alpha_deg[-2]
+    alpha_deg[0] = alpha_deg[1]
+    return alpha_deg
+
+# Metodo di calcolo di alpha effettivamente usato: è l'UNICO che entra nella
+# simulazione e nel calcolo degli hazard coefficient. Gli altri due vengono
+# calcolati e disegnati solo come riferimento in alpha_comparison.png.
+ALPHA_METHOD = 'corda'
+
+# Etichette dei tre metodi, nell'ordine in cui vengono disegnati.
+ALPHA_LABELS = {
+    'max_pendenza': 'Max pendenza (piano globale) - solo riferimento',
+    'tangente':     'Tangente traiettoria (locale) - solo riferimento',
+    'corda':        'Corda inizio-fine - USATO in simulazione e hazard',
+}
+ALPHA_COLORS = {'max_pendenza': 'tab:blue', 'tangente': 'tab:orange', 'corda': 'tab:green'}
+
+def plot_alpha_comparison(alphas_all:list, save_path:str="alpha_comparison.png"):
+    """Confronta i tre alpha: max pendenza, tangente locale, corda inizio-fine.
+
+    `alphas_all` è la lista (una voce per traiettoria) dei dizionari prodotti da
+    `_simulate`, con una chiave per metodo.
+    """
+    keys = list(ALPHA_LABELS)
+    ref = ALPHA_METHOD   # gli scarti si misurano rispetto all'alpha davvero usato
+
+    fig, (ax_prof, ax_diff, ax_sc) = plt.subplots(1, 3, figsize=(18, 5))
+
+    for k in keys:
+        ax_prof.plot(alphas_all[0][k], color=ALPHA_COLORS[k], linewidth=1.0, label=ALPHA_LABELS[k])
+    ax_prof.set_xlabel('Indice punto'); ax_prof.set_ylabel('alpha [deg]')
+    ax_prof.set_title('Profilo di inclinazione (traiettoria 0)')
+    ax_prof.grid(alpha=0.3); ax_prof.legend(loc='best', fontsize=8)
+
+    for k in keys:
+        if k == ref:
+            continue
+        ax_diff.plot(alphas_all[0][k] - alphas_all[0][ref], color=ALPHA_COLORS[k], linewidth=0.8,
+                     label=f'{ALPHA_LABELS[k]} - corda')
+    ax_diff.axhline(0, color='black', linewidth=0.6)
+    ax_diff.set_xlabel('Indice punto'); ax_diff.set_ylabel('differenza [deg]')
+    ax_diff.set_title('Scarto rispetto alla corda (traiettoria 0)')
+    ax_diff.grid(alpha=0.3); ax_diff.legend(loc='best', fontsize=8)
+
+    cat = {k: np.concatenate([a[k] for a in alphas_all]) for k in keys}
+    for k in keys:
+        if k == ref:
+            continue
+        ax_sc.scatter(cat[ref], cat[k], s=2, alpha=0.2, color=ALPHA_COLORS[k], label=ALPHA_LABELS[k])
+    lims = [min(v.min() for v in cat.values()), max(v.max() for v in cat.values())]
+    ax_sc.plot(lims, lims, color='black', linewidth=1.0, linestyle='--', label='1:1')
+    ax_sc.set_xlabel('Corda inizio-fine [deg]'); ax_sc.set_ylabel('Altro metodo [deg]')
+    ax_sc.set_title(f'Tutte le traiettorie ({len(cat[ref])} punti)')
+    ax_sc.grid(alpha=0.3); ax_sc.legend(loc='best', fontsize=8)
+
+    fig.tight_layout()
+    fig.savefig(save_path, bbox_inches='tight', format='png')
+
+    for k in keys:
+        v = cat[k]
+        print(f"alpha {ALPHA_LABELS[k]:<45}: media={v.mean():6.2f}  min={v.min():6.2f}  max={v.max():6.2f} deg")
+    for k in keys:
+        if k == ref:
+            continue
+        d = cat[k] - cat[ref]
+        print(f"  scarto ({k} - {ref}): media={d.mean():6.2f}  max|.|={np.abs(d).max():6.2f} deg")
+
+def plot_stop_points(listDf:list, risSim:list, save_path:str="stop_points.png"):
+    """Evidenzia dove lo sciatore si ferma lungo ogni traiettoria.
+
+    Pannello sinistro: vista in pianta, tratto percorso in movimento vs tratto
+    da fermo. Pannello destro: profilo di velocità in funzione dell'ascissa
+    curvilinea, con il punto di arresto marcato.
+    """
+    fig, (ax_map, ax_v) = plt.subplots(1, 2, figsize=(14, 6))
+
+    for i, (df, res) in enumerate(zip(listDf, risSim)):
+        x, y = df["Est [m]"].values, df["Nord [m]"].values
+        moving, s, v = res['moving'], res['s'], res['v']
+        k = int(moving.sum())  # primo indice da fermo
+
+        lbl = {'label': 'In movimento'} if i == 0 else {}
+        lbl_stop = {'label': 'Fermo'} if i == 0 else {}
+        lbl_pt = {'label': 'Punto di arresto'} if i == 0 else {}
+
+        ax_map.plot(x[:k], y[:k], color='tab:blue', linewidth=1.2, **lbl)
+        ax_map.plot(x[k-1:], y[k-1:], color='tab:red', linewidth=1.2, **lbl_stop)
+        ax_v.plot(s[:k], v[:k] * 3.6, color='tab:blue', linewidth=1.0, **lbl)
+        ax_v.plot(s[k-1:], v[k-1:] * 3.6, color='tab:red', linewidth=1.0, **lbl_stop)
+
+        if k < len(x):
+            ax_map.plot(x[k-1], y[k-1], marker='o', color='black', markersize=6, zorder=5, **lbl_pt)
+            ax_v.plot(s[k-1], v[k-1] * 3.6, marker='o', color='black', markersize=6, zorder=5, **lbl_pt)
+            ax_v.axvline(s[k-1], color='tab:red', linewidth=0.6, alpha=0.4)
+            print(f"Traj {i}: arresto a s = {s[k-1]:.1f} m su {s[-1]:.1f} m ({100*k/len(x):.0f}% del tracciato)")
+        else:
+            print(f"Traj {i}: lo sciatore arriva a fondo pista ({s[-1]:.1f} m)")
+
+    ax_map.set_xlabel('Est [m]'); ax_map.set_ylabel('Nord [m]')
+    ax_map.set_title('Punto di arresto lungo la traiettoria')
+    ax_map.set_aspect('equal', adjustable='datalim')
+    ax_map.grid(alpha=0.3); ax_map.legend(loc='best')
+
+    ax_v.set_xlabel('Ascissa curvilinea s [m]'); ax_v.set_ylabel('Velocità [km/h]')
+    ax_v.set_title('Profilo di velocità')
+    ax_v.grid(alpha=0.3); ax_v.legend(loc='best')
+
+    fig.tight_layout()
+    fig.savefig(save_path, bbox_inches='tight', format='png')
+
+def _simulate(df, path_to_las:str, desc_vect):
+    x, y, z = df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values
+
+    # 'corda': proiezione sulla retta partenza-arrivo. È l'alpha usato davvero, ed è
+    # la stessa direzione passata a esegui_simulazione come vec_ref: alpha e vec_ref
+    # vanno tenuti coerenti perché dentro esegui_simulazione compaiono accoppiati in
+    # factor = cos(gamma - alpha), con gamma ricavato proprio da vec_ref.
+    chord = chord_direction(df)
+
+    # 'max_pendenza' (direzione di massima discesa del piano fittato su tutta la nuvola)
+    # e 'tangente' (direzione di marcia locale) restano solo come riferimento nel plot.
+    # Un solo giro sul .las: da return_inclination escono anche grads e real_z, e le
+    # altre due proiezioni riusano quei gradienti senza rifittare i piani.
+    alpha_pendenza, grads, real_z = return_inclination(x, y, z, path_to_las, desc_vect)
+    alphas_all = {
+        'max_pendenza': alpha_pendenza,
+        'tangente':     alpha_from_direction(unit_tangents(np.stack([x, y], axis=1)), grads),
+        'corda':        alpha_from_direction(chord, grads),
+    }
+
+    ris = esegui_simulazione(x, y, z, chord, alfa=alphas_all[ALPHA_METHOD])
+    return ris, alphas_all, grads, real_z
 
 def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gates data/pointsLocationFirstCourse.csv --numTrajectories 200
     parser = argparse.ArgumentParser(description="A script that accepts keyword-like arguments.")
@@ -173,21 +522,29 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
             dy = listDf[i]["Nord [m]"].values[j] - listDf[i]["Nord [m]"].values[j-1]
             len_traj += np.sqrt(dx**2 + dy**2)
         len_trajectories.append(len_traj)
-    
+
+    desc_vect = get_descent_direction(path_to_las=args.path_to_las)
 
     maxX, maxY = max(df["Est [m]"].max()  for df in listDf), max(df["Nord [m]"].max() for df in listDf)
     minX, minY = min(df["Est [m]"].min()  for df in listDf), min(df["Nord [m]"].min() for df in listDf)
-
+    
     risSim = process_map(
         _simulate,
         listDf,
         [args.path_to_las] * len(listDf),
+        [desc_vect] * len(listDf),
         max_workers=os.cpu_count(),
         chunksize=1,
         desc="Simulating",
         unit="traj",
     )
-    risSim, alphas, grads, real_z  = [res[0] for res in risSim], [res[1] for res in risSim], [res[2] for res in risSim], [res[3] for res in risSim]  # Extract the simulation results and the alphas
+    risSim, alphas_all, grads, real_z  = [res[0] for res in risSim], [res[1] for res in risSim], [res[2] for res in risSim], [res[3] for res in risSim]  # Extract the simulation results and the alphas
+    # Da qui in poi si usa un solo alpha, lo stesso che è entrato nella simulazione
+    # (ALPHA_METHOD). Gli altri metodi restano in alphas_all solo per il confronto.
+    alphas = [a[ALPHA_METHOD] for a in alphas_all]
+
+    plot_alpha_comparison(alphas_all)   # TEMPORANEO
+    plot_stop_points(listDf, risSim)
 
     haz_bump_coeffs = []
     
@@ -197,7 +554,7 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
 
     # Post processing of the results
     haz_coeff_sim = [(np.abs(res['F_lat'])-np.min(np.abs(res['F_lat']))) / (np.max(np.abs(res['F_lat'])) - np.min(np.abs(res['F_lat']))) for res in risSim]
-    
+
     # haz_coeff_incl = [(alpha-np.min(alpha)) / (np.max(alpha)-np.min(alpha)) for alpha in alphas]
 
     alphas_der = []

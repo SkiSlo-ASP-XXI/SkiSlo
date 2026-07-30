@@ -397,15 +397,14 @@ def simula_caduta(
         F_p = Fs * np.cos(abs(beta))                 # (2) tangential: the only driver
         F_lat_grav = Fs * np.sin(abs(beta))          # fall-line gravity, sideways
 
-        F_cent = m * w * kap                         # m*v^2/R, signed with the turn
-        F_lat_tot = F_cent + np.sign(beta) * F_lat_grav                     # (5)
+        F_lat_tot = np.sign(beta) * F_lat_grav                     # (5)
 
         F_load = np.hypot(Fn, F_lat_tot)             # (4) total snow load N
         F_drag = 0.5 * rho * CdA_caduta * w                                 # (3)
         F_fric = mu_caduta * F_load                                         # (4)
         F_net = F_p - F_drag - F_fric
 
-        return F_p, F_drag, F_fric, F_lat_tot, F_cent, F_net, alpha, beta, kap
+        return F_p, F_drag, F_fric, F_lat_tot, F_net, alpha, beta, kap
 
     def _ode(s_val, w_vec):
         # Clamp: the solver may probe slightly negative w near the event root, and a
@@ -518,8 +517,9 @@ def simula_caduta(
     t_sol = np.concatenate(seg_t)
 
     # --- Force profiles, recomputed on the solution -----------------------------
-    prof = np.array([_forze(s_val, v_val**2)[:7] for s_val, v_val in zip(s_sol, v_sol)])
-    F_p_v, F_drag_v, F_fric_v, F_lat_v, F_cent_v, F_net_v, alpha_v = prof.T
+    
+    prof = np.array([_forze(s_val, v_val**2)[:6] for s_val, v_val in zip(s_sol, v_sol)])
+    F_p_v, F_drag_v, F_fric_v, F_lat_v, F_net_v, alpha_v = prof.T
     kappa_v = kappa_of_s(s_sol)
     R_v = np.where(
         np.abs(kappa_v) > 1e-12,
@@ -549,7 +549,6 @@ def simula_caduta(
         "F_drag": F_drag_v,
         "F_fric": F_fric_v,
         "F_lat": F_lat_v,
-        "F_cent": F_cent_v,
         "F_net": F_net_v,
         "R": R_v,
         "alpha": alpha_v,

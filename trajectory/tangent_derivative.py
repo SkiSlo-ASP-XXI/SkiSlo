@@ -243,15 +243,27 @@ def plane_gradient(points):
     return coeffs[0], coeffs[1]
 
 
-def tangent_derivatives(xy, surface_xyz, search_radius, min_neighbours):
+def tangent_derivatives(xy, surface_xyz, search_radius, min_neighbours, max_desc_dir):
     """Directional derivative of the surface along the trajectory tangent.
+
+    `max_desc_dir` may be given as a 3D vector (e.g. the steepest-descent vector
+    of the fitted plane); only its horizontal part is used, and it is normalised
+    here. That matters: a 3D-unit descent vector has a horizontal part of norm
+    cos(slope), so projecting on it as-is scales D by cos(slope) and
+    underestimates the inclination (3.4 deg too low on a 30 deg slope).
 
     Returns
     -------
     deriv  : (N,)  array   D(s) = grad(z) . t_hat   (NaN where under-sampled).
     grads  : (N, 2) array  the fitted (dz/dx, dz/dy) per point (NaN where skipped).
     """
-    tangents = unit_tangents(xy)
+   # tangents = unit_tangents(xy)
+
+    # D = grad(z) . u is the rise per metre travelled only if u is a horizontal
+    # UNIT vector, so tan(alpha) = D and alpha = arctan(D).
+    u = np.asarray(max_desc_dir, dtype=np.float64)[:2]
+    u = u / (np.linalg.norm(u) + 1e-12)
+
     tree = cKDTree(surface_xyz[:, :2])        # horizontal KDTree for plane fits
     n = len(xy)
     deriv = np.full(n, np.nan)
@@ -265,11 +277,11 @@ def tangent_derivatives(xy, surface_xyz, search_radius, min_neighbours):
         if np.isnan(a):
             continue
         grads[i] = (a, b)
-        deriv[i] = a * tangents[i, 0] + b * tangents[i, 1]
+        deriv[i] = a * u[0] + b * u[1]
 
     return deriv, grads
 
-def obtain_inclination(x, y, file_source):
+def obtain_inclination(x, y, file_source, desc_vect):
     """Inclination [degrees] of the surface along the trajectory at each point.
 
     The tangent derivative D = grad(z) . t_hat is the rise per metre travelled,
@@ -282,7 +294,7 @@ def obtain_inclination(x, y, file_source):
     xy = np.stack([x, y], axis=1)
     bbox = (xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max())
     surface = load_surface_points(file_source, bbox, 10.0)
-    der, grads = tangent_derivatives(xy, surface, 5.0, 5)
+    der, grads = tangent_derivatives(xy, surface, 5.0, 5, desc_vect)
 
     # Sample the surface height at each trajectory point via nearest neighbour.
     # An exact (x, y) merge never matches: the interpolated trajectory points do

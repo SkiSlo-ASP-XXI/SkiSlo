@@ -9,7 +9,7 @@ from trajectory.tangent_derivative import obtain_inclination
 
 warnings.filterwarnings("ignore") # Nasconde i warning per divisioni per zero temporanee
 
-def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225, CdA=0.3, v0=4.91, plot = False, alfa = None):
+def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, rho=1.225, CdA=0.3, v0=4.91, plot = False, alfa = None):
     """
     Calcola la fisica di uno sciatore lungo una traiettoria 3D fornita.
     
@@ -66,11 +66,14 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
         alpha_deg = np.asarray(alfa, dtype=float)
         
     # BETA -> angolo rispetto alla verticale
-    dx_ref = x_traj[-1] - x_traj[0]
-    dy_ref = y_traj[-1] - y_traj[0]
-    dz_ref = z_traj[-1] - z_traj[0]
-    vec_ref = np.array([dx_ref, dy_ref, dz_ref])
-
+    # dx_ref = x_traj[-1] - x_traj[0]
+    # dy_ref = y_traj[-1] - y_traj[0]
+    # dz_ref = z_traj[-1] - z_traj[0]
+    # vec_ref = np.array([dx_ref, dy_ref, dz_ref])
+    #TODO: Passa in input vec_ref
+    dx_ref = vec_ref[0]
+    dy_ref = vec_ref[1]
+    dz_ref = vec_ref[2]
     gamma = -np.arctan2(dz_ref, np.sqrt(dx_ref**2 + dy_ref**2))
     gamma_deg = np.degrees(gamma)
     factor = np.cos(np.radians(gamma_deg - alpha_deg))  
@@ -230,6 +233,27 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
         F_net_vec[i]  = F_net
         R_vec[i] = R_local
 
+    # =========================================
+    # 6b. RIPORTO SULLA GRIGLIA COMPLETA DELLA TRAIETTORIA
+    # =========================================
+    # solve_ivp si arresta dove scatta stop_event (w = v^2 -> 0): da lì in poi lo
+    # sciatore è fermo. Riportiamo le uscite sugli N punti della traiettoria,
+    # azzerando velocità e forze dopo l'arresto, così che abbiano sempre la stessa
+    # lunghezza degli array per-punto (alfa, tangenti, gradienti...).
+    moving = s <= s_sol[-1]
+
+    def _su_griglia_completa(vec):
+        out = np.zeros(N)
+        out[moving] = np.interp(s[moving], s_sol, vec)
+        return out
+
+    v_sol      = _su_griglia_completa(v_sol)    # sciatore fermo: v = 0
+    F_lat_vec  = _su_griglia_completa(F_lat_vec)  # forza laterale netta nulla
+    F_cent_vec = _su_griglia_completa(F_cent_vec) # v = 0 -> m*v^2/R = 0
+    F_net_vec  = _su_griglia_completa(F_net_vec)  # accelerazione tangenziale nulla
+    R_vec      = R_vals   # il raggio di curvatura è geometrico: vale anche da fermi
+    s_sol      = s
+
     # Chiamiamo la simulazione (nota: assicurati che i parametri di default m=80 vadano bene)
     risultati_sim = {
         's': s_sol,
@@ -239,6 +263,7 @@ def esegui_simulazione(x_traj, y_traj, z_traj, m=80, g=9.81, mu=0.16, rho=1.225,
         'F_net': F_net_vec,
         'R': R_vec,
         'tan': T_hat,
+        'moving': moving,   # True finché lo sciatore è in movimento
     }
 
     # Estraiamo i dati dal dizionario
