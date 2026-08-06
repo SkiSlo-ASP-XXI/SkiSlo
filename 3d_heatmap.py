@@ -1,9 +1,39 @@
+"""Hazard heatmap draped over the real slope surface (3D).
+
+Same pipeline as `main_matrix.py` - trajectory generation, skier simulation, hazard
+coefficients, `riverMatrix` - with one extra output: instead of only the flat
+`imshow` of the matrix, the terrain is reconstructed from the .las point cloud given
+by `--path_to_las` and the heatmap is draped over it as a 3D surface.
+
+Every figure this script writes gets a `_3d` suffix, so running it never overwrites
+the PNGs produced by `main_matrix.py`.
+
+Usage
+-----
+Same interpreter as `main_matrix.py`: it needs numpy >= 2 (`np.atan`) together with
+folium, laspy and tqdm, which in this repo means `.myvenv` (`.venv` is on numpy 1.26 and
+`.lasreading` has no folium).
+
+    .myvenv/bin/python 3d_heatmap.py --gates data/pointsLocationFirstCourse.csv --numTrajectories 200
+    .myvenv/bin/python 3d_heatmap.py --gates ... --hazard_fill masked    # grey off the trajectories
+    .myvenv/bin/python 3d_heatmap.py --gates ... --dem_res 2 --z_exag 2  # coarser DEM, exaggerated relief
+    .myvenv/bin/python 3d_heatmap.py --gates ... --pyvista               # interactive viewer
+
+Output
+------
+    river_matrix_surface_3d.png     the new 3D figure
+    river_matrix_3d.png, reliability_matrix_3d.png, alpha_comparison_3d.png,
+    stop_points_3d.png, fall_paths_3d.png     the usual 2D figures, suffixed
+"""
+
 import argparse, gc, random, os
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.cm import ScalarMappable
 from matplotlib.collections import LineCollection
+from matplotlib.colors import LightSource, Normalize
 
 
 
@@ -14,7 +44,7 @@ from skier_model_py.fall_simulation import simula_caduta
 from trajectory.tangent_derivative import obtain_inclination, obtain_slope_borders, sample_surface_z, unit_tangents
 
 from tqdm.contrib.concurrent import process_map
-from scipy.ndimage import convolve
+from scipy.ndimage import binary_erosion, convolve
 from scipy.spatial import cKDTree
 
 """Best-fit plane of a LAS/LAZ point cloud.
@@ -416,7 +446,7 @@ ALPHA_LABELS = {
 }
 ALPHA_COLORS = {'max_pendenza': 'tab:blue', 'tangente': 'tab:orange', 'corda': 'tab:green'}
 
-def plot_alpha_comparison(alphas_all:list, save_path:str="alpha_comparison.png"):
+def plot_alpha_comparison(alphas_all:list, save_path:str="alpha_comparison_3d.png"):
     """Confronta i tre alpha: max pendenza, tangente locale, corda inizio-fine.
 
     `alphas_all` è la lista (una voce per traiettoria) dei dizionari prodotti da
@@ -466,7 +496,7 @@ def plot_alpha_comparison(alphas_all:list, save_path:str="alpha_comparison.png")
         d = cat[k] - cat[ref]
         print(f"  scarto ({k} - {ref}): media={d.mean():6.2f}  max|.|={np.abs(d).max():6.2f} deg")
 
-def plot_stop_points(listDf:list, risSim:list, save_path:str="stop_points.png"):
+def plot_stop_points(listDf:list, risSim:list, save_path:str="stop_points_3d.png"):
     """Evidenzia dove lo sciatore si ferma lungo ogni traiettoria.
 
     Pannello sinistro: vista in pianta, tratto percorso in movimento vs tratto
@@ -508,6 +538,337 @@ def plot_stop_points(listDf:list, risSim:list, save_path:str="stop_points.png"):
 
     fig.tight_layout()
     fig.savefig(save_path, bbox_inches='tight', format='png')
+
+# ======================================================================
+# 3D: terrain reconstruction from the .las and drape of the hazard heatmap
+# ======================================================================
+
+# How many trajectories to overlay on the 3D surface. They are drawn as a readability
+# aid, not as data: past a handful they merge into an opaque band.
+MAX_TRAJECTORIES_DRAWN = 8
+
+
+def build_dem(las_path:str, res:float=1.0, chunk:int=8_000_000):
+    """Rasterise the point cloud into a mean-elevation grid (a DEM).
+
+    The cloud is read in chunks and accumulated with `np.bincount`, exactly like the
+    occupancy grid of `obtain_slope_borders`: memory is bounded by the grid, not by
+    the number of points, so a 14M-point cloud costs the same as a 95k one.
+
+    Cells that received no point stay NaN. That is what draws the real slope outline:
+    the .las is cropped to the piste, so only ~10% of its bounding box is occupied and
+    `plot_surface` simply skips the quads that touch a NaN.
+
+    Parameters
+    ----------
+    las_path : str      Path to the surface .las (X/Y in UTM32N, Z = height).
+    res : float         Cell size [m].
+
+    Returns
+    -------
+    x_c : (nx,) array   Easting of the cell centres.
+    y_c : (ny,) array   Northing of the cell centres.
+    Z   : (ny, nx) array  Mean elevation per cell, NaN where empty. The (row = Nord,
+                          col = Est) layout matches `riverMatrix`.
+    counts : (ny, nx) array  Number of cloud points per cell.
+    """
+    with laspy.open(las_path) as reader:
+        hdr = reader.header
+        xmin, ymin, xmax, ymax = hdr.x_min, hdr.y_min, hdr.x_max, hdr.y_max
+
+    nx = int(np.ceil((xmax - xmin) / res)) + 1
+    ny = int(np.ceil((ymax - ymin) / res)) + 1
+
+    z_sum = np.zeros(nx * ny)
+    counts = np.zeros(nx * ny)
+
+    with laspy.open(las_path) as reader:
+        for chunk_pts in reader.chunk_iterator(chunk):
+            ix = ((np.asarray(chunk_pts.x) - xmin) / res).astype(np.intp)
+            iy = ((np.asarray(chunk_pts.y) - ymin) / res).astype(np.intp)
+            np.clip(ix, 0, nx - 1, out=ix)
+            np.clip(iy, 0, ny - 1, out=iy)
+            flat = ix * ny + iy
+            z_sum += np.bincount(flat, weights=np.asarray(chunk_pts.z), minlength=nx * ny)
+            counts += np.bincount(flat, minlength=nx * ny)
+
+    # Accumulated as (Est, Nord); transpose to the (row = Nord, col = Est) layout.
+    z_sum = z_sum.reshape(nx, ny).T
+    counts = counts.reshape(nx, ny).T
+
+    Z = np.divide(z_sum, counts, out=np.full_like(z_sum, np.nan), where=counts > 0)
+
+    x_c = xmin + (np.arange(nx) + 0.5) * res
+    y_c = ymin + (np.arange(ny) + 0.5) * res
+    return x_c, y_c, Z, counts
+
+
+def fill_dem_holes(Z:np.ndarray, n_passes:int=2, min_neighbours:int=5) -> np.ndarray:
+    """Fill isolated empty DEM cells with the mean of their 3x3 neighbours.
+
+    Same trick already used on `riverMatrix`: a cell is filled only when enough of its
+    neighbours are known, so the reconstructed region grows by at most one cell per
+    pass and the piste outline stays honest instead of bleeding outwards.
+
+    The default .las holds ~3.8 points/m2 inside the piste ribbon, so a 1 m grid has
+    scattered gaps that would otherwise punch holes through the surface.
+    """
+    kernel = np.ones((3, 3), dtype=float)
+    Z = Z.copy()
+
+    for _ in range(n_passes):
+        known = np.isfinite(Z)
+        if known.all():
+            break
+        filled = np.where(known, Z, 0.0)
+        n_known = convolve(known.astype(float), kernel, mode='constant', cval=0.0)
+        z_around = convolve(filled, kernel, mode='constant', cval=0.0)
+
+        fillable = ~known & (n_known >= min_neighbours)
+        if not fillable.any():
+            break
+        Z = np.where(fillable, z_around / np.where(n_known > 0, n_known, 1.0), Z)
+
+    return Z
+
+
+def hazard_on_dem(riverMatrix:np.ndarray, reliabilityMatrix:np.ndarray, x_c:np.ndarray, y_c:np.ndarray,
+                  minX:float, minY:float, sx:float, sy:float, Z:np.ndarray,
+                  mode:str='extrapolate', fill_radius:float=30.0):
+    """Resample the hazard heatmap onto the DEM grid.
+
+    The lookup uses the very same `sx` / `sy` scales as the 2D overlays, i.e. the exact
+    inverse of how `riverMatrix` was filled (`flat = ys * W + xs`):
+
+        column = (Est  - minX) * sx        row = (Nord - minY) * sy
+        hazard = riverMatrix[row, column]
+
+    Going through `sx`/`sy` matters because the matrix cells are not exactly 1 m2 (W is
+    derived from the Nord extent yet scales the Est axis, and vice versa); reproducing
+    that mapping is what makes the 3D drape line up cell-for-cell with the 2D figure.
+
+    Parameters
+    ----------
+    Z : (ny, nx) array   DEM elevations; NaN cells are off the reconstructed slope and
+                         are never given a hazard value.
+    mode : {'extrapolate', 'masked'}
+        'masked' colours only the cells a simulated trajectory actually crosses.
+        'extrapolate' additionally spreads each covered cell's hazard to the terrain
+        around it (nearest neighbour, at most `fill_radius` metres away), so the whole
+        piste is coloured while the invented values stay bounded to the neighbourhood
+        of real data.
+
+    Returns
+    -------
+    haz : (ny, nx) array   Hazard per DEM cell, NaN where undefined.
+    covered : (ny, nx) bool array   Cells crossed by at least one trajectory.
+    """
+    H, W = riverMatrix.shape
+    ny, nx = Z.shape
+
+    # Cell centres -> riverMatrix indices (nearest cell).
+    col = np.rint((x_c - minX) * sx).astype(np.intp)          # (nx,) Est  -> column
+    row = np.rint((y_c - minY) * sy).astype(np.intp)          # (ny,) Nord -> row
+    col_ok, row_ok = (col >= 0) & (col < W), (row >= 0) & (row < H)
+
+    on_surface = np.isfinite(Z)
+    inside = row_ok[:, None] & col_ok[None, :] & on_surface
+
+    haz = np.full((ny, nx), np.nan)
+    covered = np.zeros((ny, nx), dtype=bool)
+
+    rr, cc = np.meshgrid(np.clip(row, 0, H - 1), np.clip(col, 0, W - 1), indexing='ij')
+    sampled = riverMatrix[rr, cc]
+    has_data = inside & (reliabilityMatrix[rr, cc] > 0)
+
+    covered[has_data] = True
+    haz[has_data] = sampled[has_data]
+
+    if mode == 'extrapolate' and covered.any():
+        X, Y = np.meshgrid(x_c, y_c)
+        tree = cKDTree(np.column_stack([X[covered], Y[covered]]))
+        src = haz[covered]
+
+        todo = on_surface & ~covered
+        _, idx = tree.query(np.column_stack([X[todo], Y[todo]]),
+                            distance_upper_bound=fill_radius, workers=-1)
+        vals = np.full(idx.shape, np.nan)
+        found = idx < src.size          # beyond the radius cKDTree returns n
+        vals[found] = src[idx[found]]
+        haz[todo] = vals
+
+    return haz, covered
+
+
+def _dem_z_at(x, y, x_c:np.ndarray, y_c:np.ndarray, Z:np.ndarray) -> np.ndarray:
+    """Elevation of the DEM cell nearest to each (x, y). NaN off the reconstructed slope.
+
+    Used to lift the 2D overlays (trajectories, gates, markers) onto the surface. Sampling
+    the DEM rather than the .las keeps the overlays exactly on the drawn mesh, and costs
+    nothing next to a per-point plane fit through `sample_surface_z`.
+    """
+    res_x = x_c[1] - x_c[0] if len(x_c) > 1 else 1.0
+    res_y = y_c[1] - y_c[0] if len(y_c) > 1 else 1.0
+    i = np.clip(np.rint((np.atleast_1d(x) - x_c[0]) / res_x).astype(np.intp), 0, len(x_c) - 1)
+    j = np.clip(np.rint((np.atleast_1d(y) - y_c[0]) / res_y).astype(np.intp), 0, len(y_c) - 1)
+    return Z[j, i]
+
+
+def plot_hazard_surface_3d(x_c, y_c, Z, haz, covered, listDf, real_gates, max_HC_xy, desc_vect,
+                           z_exag:float=1.0, mode:str='extrapolate',
+                           save_path:str="river_matrix_surface_3d.png"):
+    """Draw the hazard heatmap draped over the reconstructed slope.
+
+    The colour of a cell is its hazard coefficient, on the same RdYlGn_r scale as the 2D
+    figure. Cells a trajectory really crosses keep the full colour; cells whose value was
+    extrapolated from a neighbour are washed towards grey, and terrain with no value at
+    all is plain grey - so "measured here" and "guessed from nearby" stay distinguishable
+    at a glance. The trajectory corridor is outlined on top of the surface.
+    """
+    X, Y = np.meshgrid(x_c, y_c)
+
+    cmap = plt.get_cmap('RdYlGn_r')
+    # Autoscaled on the drawn values, like the imshow of the 2D figure: the coefficients
+    # sit in a narrow band well inside [0, 1], and a fixed 0-1 scale would render the
+    # whole piste the same shade of green.
+    has_haz = np.isfinite(haz)
+    norm = Normalize(vmin=float(np.nanmin(haz)), vmax=float(np.nanmax(haz))) if has_haz.any() \
+        else Normalize(vmin=0.0, vmax=1.0)
+
+    # facecolors must be fully defined: NaN hazard on real terrain reads as bare ground.
+    GREY = np.array([0.78, 0.78, 0.78, 1.0])
+    facecolors = np.empty(Z.shape + (4,))
+    facecolors[...] = GREY
+    facecolors[has_haz] = cmap(norm(np.where(has_haz, haz, 0.0)))[has_haz]
+
+    # Extrapolated cells are desaturated towards the bare-ground grey rather than made
+    # transparent: on a 3D surface alpha blends with the white background, which washes
+    # the hue out completely and confuses the depth sorting.
+    faded = has_haz & ~covered
+    facecolors[faded] = 0.7 * facecolors[faded] + 0.3 * GREY
+
+    # Hillshade the colours with the terrain's own relief. Without it the bumps - the
+    # very thing the hazard is computed from - are only conveyed by the silhouette, and a
+    # 15-degree piste seen obliquely reads as a flat plank.
+    z_shade = np.where(np.isfinite(Z), Z, np.nanmean(Z))
+    res = float(x_c[1] - x_c[0]) if len(x_c) > 1 else 1.0
+    facecolors[..., :3] = LightSource(azdeg=315, altdeg=45).shade_rgb(
+        facecolors[..., :3], z_shade, blend_mode='soft', vert_exag=2.0, dx=res, dy=res)
+
+    fig = plt.figure(figsize=(13, 10))
+    ax = fig.add_subplot(projection='3d')
+    # mplot3d sorts whole collections by their mean depth, so every landmark scatter would
+    # disappear under the one big surface collection. Draw in explicit zorder instead: the
+    # overlays are annotations, better always visible than correctly occluded.
+    ax.computed_zorder = False
+    ax.plot_surface(X, Y, Z, facecolors=facecolors, rstride=1, cstride=1,
+                    linewidth=0, antialiased=False, shade=False, zorder=1)
+
+    # Outline of the region the trajectories actually cover. Pointless in 'masked' mode,
+    # where the coloured cells already are that region and the outline would just cover
+    # the handful of pixels the corridor is worth at full-slope zoom.
+    dz_range = float(np.nanmax(Z) - np.nanmin(Z)) if np.isfinite(Z).any() else 1.0
+    lift = 0.01 * dz_range
+    outline = (covered & ~binary_erosion(covered)) if mode == 'extrapolate' else np.zeros_like(covered)
+    if outline.any():
+        ax.scatter(X[outline], Y[outline], Z[outline] + lift, color='black', s=0.8,
+                   marker='.', depthshade=False, zorder=2, label='Trajectory corridor')
+
+    # A sample of the trajectories, and the usual landmarks of the 2D figure. Only a few
+    # paths are drawn: at 200 trajectories the bundle turns into a solid black band that
+    # hides the very heatmap it produced, and the corridor outline above already says
+    # where they run.
+    step = max(1, len(listDf) // MAX_TRAJECTORIES_DRAWN)
+    for n, df in enumerate(listDf[::step]):
+        xt, yt = df["Est [m]"].values, df["Nord [m]"].values
+        ax.plot(xt, yt, _dem_z_at(xt, yt, x_c, y_c, Z) + lift, color='0.15', linewidth=0.5,
+                alpha=0.55, zorder=3,
+                label=f'Trajectories (1 in {step})' if n == 0 else None)
+
+    gx, gy = real_gates["Est [m]"].values, real_gates["Nord [m]"].values
+    ax.scatter(gx, gy, _dem_z_at(gx, gy, x_c, y_c, Z) + lift, color='purple', s=45, marker='s',
+               edgecolors='black', linewidths=0.5, depthshade=False, zorder=4, label='Gates')
+
+    start, end = listDf[0].iloc[0], listDf[0].iloc[-1]
+    for pt, color, marker, lbl in ((start, 'lime', '*', 'Start'), (end, 'cyan', 'X', 'End')):
+        ax.scatter(pt["Est [m]"], pt["Nord [m]"],
+                   _dem_z_at(pt["Est [m]"], pt["Nord [m]"], x_c, y_c, Z) + lift,
+                   color=color, s=140, marker=marker, edgecolors='black', linewidths=0.5,
+                   depthshade=False, zorder=5, label=lbl)
+
+    mx, my = max_HC_xy
+    ax.scatter(mx, my, _dem_z_at(mx, my, x_c, y_c, Z) + lift, color='magenta', s=160, marker='*',
+               edgecolors='black', linewidths=0.5, depthshade=False, zorder=6, label='Max hazard')
+
+    # True metric aspect between Est and Nord; z only exaggerated on request, since the
+    # 200 m of drop on this slope are already comparable to its footprint.
+    dx, dy = float(np.ptp(x_c)), float(np.ptp(y_c))
+    ax.set_box_aspect((dx, dy, max(dz_range, 1e-9) * z_exag))
+
+    # Camera on the downhill side, so the slope faces it and the piste runs across the
+    # frame instead of collapsing to a sliver. Steep enough to read the heatmap as a map,
+    # shallow enough to still see the relief under it.
+    ax.view_init(elev=50, azim=float(np.degrees(np.arctan2(desc_vect[1], desc_vect[0]))))
+
+    ax.set_xlabel("Est [m]"); ax.set_ylabel("Nord [m]"); ax.set_zlabel("Quota [m]")
+    ax.set_title("Hazard coefficient over the reconstructed slope"
+                 + (" (desaturated = extrapolated)" if mode == 'extrapolate' else ""))
+    ax.legend(loc='upper left', fontsize=8)
+
+    # plot_surface got explicit facecolors, so it carries no mappable for the colorbar.
+    sm = ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.1).set_label('Hazard coefficient')
+
+    fig.savefig(save_path, bbox_inches='tight', format='png')
+    print(f"3D hazard surface saved to {save_path}")
+    return fig
+
+
+def view_pyvista_3d(x_c, y_c, Z, haz, listDf):
+    """Open the interactive pyvista window, if pyvista is available.
+
+    Imported lazily: the figure above is the deliverable, the viewer is a convenience,
+    and not every interpreter in this repo has pyvista installed.
+    """
+    try:
+        import pyvista as pv
+    except ImportError:
+        print("[Info] pyvista is not installed in this interpreter, skipping the "
+              "interactive viewer.\n"
+              "       Try:  .myvenv/bin/python 3d_heatmap.py ... --pyvista")
+        return
+
+    X, Y = np.meshgrid(x_c, y_c)
+    # A structured grid needs a vertex everywhere, so the empty cells are parked at the
+    # lowest elevation and then blanked out; that is what leaves the real piste outline.
+    on_surface = np.isfinite(Z)
+    grid = pv.StructuredGrid(X, Y, np.where(on_surface, Z, float(np.nanmin(Z))))
+    # StructuredGrid ravels its arrays in Fortran order - a C-order scalar would be
+    # scrambled across the mesh and, with the NaNs, blank out nearly all of it.
+    grid.hide_points(~on_surface.ravel(order='F'))
+    grid["Hazard coefficient"] = haz.ravel(order='F')
+
+    plotter = pv.Plotter(window_size=(1600, 900))
+    # Terrain with no hazard value stays grey rather than invisible, as in the figure.
+    plotter.add_mesh(grid, scalars="Hazard coefficient", cmap='RdYlGn_r',
+                     nan_color='lightgrey', nan_opacity=1.0, show_scalar_bar=True)
+
+    step = max(1, len(listDf) // MAX_TRAJECTORIES_DRAWN)
+    for df in listDf[::step]:
+        xt, yt = df["Est [m]"].values, df["Nord [m]"].values
+        zt = _dem_z_at(xt, yt, x_c, y_c, Z)
+        keep = np.isfinite(zt)
+        if keep.sum() > 1:
+            plotter.add_mesh(pv.lines_from_points(np.column_stack([xt[keep], yt[keep], zt[keep] + 0.5])),
+                             color='black', line_width=1.5)
+
+    plotter.show_axes()
+    plotter.view_isometric()
+
+    print("[Info] Opening the pyvista window (close it to continue)...")
+    plotter.show(title="Hazard coefficient over the slope")
+
 
 def _simulate(df, path_to_las:str, desc_vect):
     x, y, z = df["Est [m]"].values, df["Nord [m]"].values, df["Quota Orto. [m]"].values
@@ -551,8 +912,20 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
     
     parser.add_argument("--path_to_las", type=str, default="/Users/andre/Documents/github.nosync/SkiSlo/data/surfaces/Sestriere_fotogrammetria_95000.las",
                         help="Path to the .las file containing the elevation data. If not provided, it will default to ./data/surfaces/Sestriere_fotogrammetria_95000.las.")
-    parser.add_argument("--depth_paath", type=str, default="/Users/andre/Documents/github.nosync/SkiSlo/data/snow_depth/Nuvola_differenza_neve.csv",)
-    
+    parser.add_argument("--depth_path", type=str, default="/Users/andre/Documents/github.nosync/SkiSlo/data/snow_depth/Nuvola_differenza_neve.csv",)
+
+    #parameters for the 3D surface plot (OPTIONAL)
+    parser.add_argument("--dem_res", type=float, default=1.0,
+                        help="Cell size [m] of the terrain grid rebuilt from the .las. Larger values are faster and smoother, at the cost of detail.")
+    parser.add_argument("--hazard_fill", choices=("extrapolate", "masked"), default="extrapolate",
+                        help="'extrapolate' spreads the hazard over the slope around the trajectories (faded in the plot); 'masked' leaves the terrain grey wherever no trajectory passes.")
+    parser.add_argument("--fill_radius", type=float, default=30.0,
+                        help="Max distance [m] the extrapolation may reach from a trajectory. Terrain farther than this stays grey, so hazard is never invented far from real data.")
+    parser.add_argument("--z_exag", type=float, default=1.0,
+                        help="Vertical exaggeration of the 3D plot (1 = true metric aspect).")
+    parser.add_argument("--pyvista", action='store_true',
+                        help="Also open the interactive pyvista viewer (needs pyvista installed).")
+
     #########################
 
     args = parser.parse_args()
@@ -644,8 +1017,8 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
 
     #load the snow depth from input file
     depth_tree = None
-    if args.depth_paath is not None:
-        depthDf = pd.read_csv(args.depth_paath, sep=',', header=0)
+    if args.depth_path is not None:
+        depthDf = pd.read_csv(args.depth_path, sep=',', header=0)
         depth_tree = SnowDepthTree.from_dataframe(depthDf)
         # La nuvola pesa centinaia di MB: l'albero ha già copiato x, y e depth
         del depthDf
@@ -779,27 +1152,56 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
                 edgecolors='black', linewidths=0.5, zorder=6, label='End')
     plt.legend(loc='best')
 
-    plt.savefig("river_matrix.png", bbox_inches='tight', format='png')
+    plt.savefig("river_matrix_3d.png", bbox_inches='tight', format='png')
 
     plt.figure(figsize=(8, 8))
     plt.imshow(np.ma.masked_equal(reliabilityMatrix.T, 0), cmap=cmap, origin='lower')
     plt.colorbar(label='Reliability')
-    plt.savefig("reliability_matrix.png", bbox_inches='tight', format='png')
-    
-    #show results
-    plt.show()
+    plt.savefig("reliability_matrix_3d.png", bbox_inches='tight', format='png')
 
-
+    # The max-hazard cell is pure numpy and the 3D figure marks it, so it is computed
+    # here rather than after the (blocking) plt.show() below.
     max_HC = np.argmax(haz_coeff) #[idx_traiettoria, indx_punto_in_traiettoria]
     max_HC = (max_HC // haz_coeff.shape[1], max_HC % haz_coeff.shape[1])  # Convert flat index to 2D index
     max_HC_x = xs[max_HC[0]][max_HC[1]]
     max_HC_y = ys[max_HC[0]][max_HC[1]]
 
-    trajectories_selected = reverseMapping.get((max_HC_x, max_HC_y), set()) 
-    
+    trajectories_selected = reverseMapping.get((max_HC_x, max_HC_y), set())
+
     max_HC_x_continous = int(max_HC_x * (maxX - minX + 1e-9) / (W - 1) + minX)
     max_HC_y_continous = int(max_HC_y * (maxY - minY + 1e-9) / (H - 1) + minY)
-    
+
+#======================================================================================================
+    #HEATMAP 3D SULLA SUPERFICIE REALE
+#======================================================================================================
+
+    # Rebuild the terrain from the same .las the hazard was computed on, then drape
+    # riverMatrix over it. sx / sy are the ones defined for the 2D overlays above, so the
+    # drape lands on exactly the same cells as river_matrix_3d.png.
+    print(f"Rebuilding the terrain from {args.path_to_las} at {args.dem_res} m ...")
+    dem_x, dem_y, dem_z, dem_counts = build_dem(args.path_to_las, res=args.dem_res)
+    print(f"DEM grid {dem_z.shape[1]} x {dem_z.shape[0]} cells, "
+          f"{np.isfinite(dem_z).sum()} of {dem_z.size} on the reconstructed slope")
+    dem_z = fill_dem_holes(dem_z)
+
+    haz_grid, covered = hazard_on_dem(riverMatrix, reliabilityMatrix, dem_x, dem_y,
+                                      minX, minY, sx, sy, dem_z,
+                                      mode=args.hazard_fill, fill_radius=args.fill_radius)
+    print(f"Hazard on the DEM: {covered.sum()} cells crossed by a trajectory, "
+          f"{int(np.isfinite(haz_grid).sum()) - int(covered.sum())} extrapolated "
+          f"(mode={args.hazard_fill})")
+
+    plot_hazard_surface_3d(dem_x, dem_y, dem_z, haz_grid, covered, listDf, real_gates,
+                           (max_HC_x_continous, max_HC_y_continous), desc_vect,
+                           z_exag=args.z_exag, mode=args.hazard_fill)
+
+    #show results
+    plt.show()
+
+    if args.pyvista:
+        view_pyvista_3d(dem_x, dem_y, dem_z, haz_grid, listDf)
+
+
     t = np.arange(100)   # samples along each tangent ray, in metres from the trajectory
     max_HC_tangents = []   # (traj index, point index, tangent angle) at the max-hazard cell
     rays = []              # (x_tan, y_tan) ray samples, one entry per selected trajectory
@@ -874,7 +1276,7 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
     ax.set_title(f"Post-fall slides from the max-hazard cell (haz={haz_coeff[max_HC]:.3f})")
     ax.set_aspect('equal', adjustable='datalim')
     ax.grid(True, ls='--', alpha=0.4)
-    fig.savefig("fall_paths.png", bbox_inches='tight', format='png')
+    fig.savefig("fall_paths_3d.png", bbox_inches='tight', format='png')
     plt.show()
 
 
