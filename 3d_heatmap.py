@@ -256,7 +256,9 @@ def get_bump_coeff(alfa, tan, der_x, der_y, sw=None, tol:float=1e-3):
 
 
     #Now do the same on alfa
-    der_alfa = np.gradient(alfa)
+    alpha = np.degrees(np.atan((der_x * tan[:, 0] + der_y * tan[:, 1])
+                                       / (np.linalg.norm(tan, axis=1) + 1e-9)))
+    der_alfa = np.gradient(alpha)
 
     der_sw_alfa = np.zeros_like(der_alfa)
 
