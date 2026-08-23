@@ -289,8 +289,7 @@ def get_bump_coeff(alfa, tan, der_x, der_y, sw=None, tol:float=1e-3):
     # start interni nella finestra (a, b): c[b] - c[a+1]... ma serve gestire a==b
     # più semplice: start interni in [a+1, b) = c[b] - c[a+1]
     # più il bordo: mask[a] == 1 (conta come "0->1" per via del prepend=0)
-    count_dalfa_zeros = (c[np.minimum(j + sw, N)] - c[np.minimum(np.maximum(j - sw, 0) + 1, N)] + mask[np.maximum(j - sw, 0)]).astype(float)    
-    
+    count_dalfa_zeros = (c[np.minimum(j + sw, N - 1)] - c[np.maximum(j - sw, 0)]).astype(float)
     
     haz_coeff = count_dalfa_zeros+count_dgamma_zeros
 
@@ -895,7 +894,7 @@ def _simulate(df, path_to_las:str, desc_vect):
     ris = esegui_simulazione(x, y, z, chord, alfa=alphas_all[ALPHA_METHOD])
     return ris, alphas_all, grads, real_z
 
-def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gates data/pointsLocationFirstCourse.csv --numTrajectories 200
+def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gates data/pointsLocationFirstCourse.csv --numTrajectories 200
     parser = argparse.ArgumentParser(description="A script that accepts keyword-like arguments.")
     #paths for loading and saving data (REQUIRED)
     parser.add_argument("--gates", type=str, help="gates_path", required=True)
@@ -1280,6 +1279,22 @@ def main(num_points:int=3_000): #To call main paste: python main_matrix.py --gat
     ax.grid(True, ls='--', alpha=0.4)
     fig.savefig("fall_paths_3d.png", bbox_inches='tight', format='png')
     plt.show()
+
+    #save the results to a CSV file
+    results_df = pd.DataFrame({
+        "Trajectory Index": np.repeat(np.arange(len(listDf)), [len(df) for df in listDf]),
+        "Point Index": np.concatenate([np.arange(len(df)) for df in listDf]),
+        "Est [m]": np.concatenate([df["Est [m]"].values for df in listDf]),
+        "Nord [m]": np.concatenate([df["Nord [m]"].values for df in listDf]),
+        "Quota Orto. [m]": np.concatenate([df["Quota Orto. [m]"].values for df in listDf]),
+        "Hazard Coefficient": np.concatenate(haz_coeff),
+        "Bump Coefficient": np.concatenate(haz_bump_coeffs),
+        "Inclination Coefficient": np.concatenate(haz_coeff_incl),
+        "Snow Depth Coefficient": np.concatenate(haz_coeff_depth)
+        })
+
+    results_df.to_csv(os.path.join(args.output, "hazard_coefficients.csv"), index=False)
+    print(f"Hazard coefficients saved to {os.path.join(args.output, 'hazard_coefficients.csv')}")
 
 
 

@@ -259,7 +259,7 @@ def get_bump_coeff(alfa, tan, der_x, der_y, sw=None, tol:float=1e-3):
     # start interni nella finestra (a, b): c[b] - c[a+1]... ma serve gestire a==b
     # più semplice: start interni in [a+1, b) = c[b] - c[a+1]
     # più il bordo: mask[a] == 1 (conta come "0->1" per via del prepend=0)
-    count_dalfa_zeros = (c[np.minimum(j + sw, N)] - c[np.minimum(np.maximum(j - sw, 0) + 1, N)] + mask[np.maximum(j - sw, 0)]).astype(float)    
+    count_dalfa_zeros = (c[np.minimum(j + sw, N - 1)] - c[np.maximum(j - sw, 0)]).astype(float)
     
     
     haz_coeff = count_dalfa_zeros+count_dgamma_zeros
