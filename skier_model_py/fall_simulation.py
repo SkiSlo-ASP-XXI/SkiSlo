@@ -80,7 +80,7 @@ from scipy.interpolate import interp1d
 # --- Defaults for a sliding body (vs. a carving skier; see module docstring). -------
 MU_CADUTA_DEFAULT = 0.45      # Coulomb friction, body/snow. Range 0.3-0.7.
 CDA_CADUTA_DEFAULT = 0.70     # Drag area [m^2], tumbling posture.
-MU_ENSEMBLE_DEFAULT = (0.30, 0.45, 0.60)
+MU_ENSEMBLE_DEFAULT = (0.20, 0.45, 0.50)
 
 
 # =====================================================================================

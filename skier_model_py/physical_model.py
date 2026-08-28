@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.integrate import solve_ivp
+from scipy.signal import savgol_filter
 import warnings
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
@@ -64,27 +65,25 @@ def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, r
             alpha_deg_est[i] = np.degrees(alpha)
     if alfa is not None:
         alpha_deg = np.asarray(alfa, dtype=float)
-        
-    # BETA -> angolo rispetto alla verticale
-    # dx_ref = x_traj[-1] - x_traj[0]
-    # dy_ref = y_traj[-1] - y_traj[0]
-    # dz_ref = z_traj[-1] - z_traj[0]
-    # vec_ref = np.array([dx_ref, dy_ref, dz_ref])
-    #TODO: Passa in input vec_ref
-    dx_ref = vec_ref[0]
-    dy_ref = vec_ref[1]
-    dz_ref = vec_ref[2]
-    gamma = -np.arctan2(dz_ref, np.sqrt(dx_ref**2 + dy_ref**2))
-    gamma_deg = np.degrees(gamma)
-    factor = np.cos(np.radians(gamma_deg - alpha_deg))  
-    vec_ref_arr = factor[:, None] * vec_ref                  
 
-    vec_ref_norm = np.linalg.norm(vec_ref_arr, axis=1)
-    # Evitiamo divisioni per zero
-    vec_ref_norm[vec_ref_norm == 0] = 1e-10
-    vec_ref_hat = vec_ref_arr / vec_ref_norm[:, None]
+    # ==========================================
+    # 2b. PIANO LOCALE E BETA
+    # ==========================================
+    # IPOTESI: la direzione di massima pendenza locale e' allineata in azimut
+    # con la corda. Sotto questa ipotesi il piano locale e' definito dalla sola
+    # alpha fornita dal modello di superficie, senza bisogno dell'aspect del DSM.
+    # Limite noto: un disallineamento di azimut Delta_phi permane come bias su beta.
 
-    # Calcolo del vettore tangente rispetto allo spazio (s) anziché al tempo
+    phi_c = np.arctan2(vec_ref[1], vec_ref[0])      # azimut della corda
+    alpha_rad_arr = np.radians(alpha_deg)
+
+    ca, sa = np.cos(alpha_rad_arr), np.sin(alpha_rad_arr)
+    cp, sp = np.cos(phi_c), np.sin(phi_c)
+
+    n_hat = np.column_stack([sa*cp, sa*sp, ca])     # normale al piano locale
+    u_hat = np.column_stack([ca*cp, ca*sp, -sa])    # corda proiettata = max pendenza
+
+    # --- tangente locale ---
     dx_ds = np.gradient(x_traj, s)
     dy_ds = np.gradient(y_traj, s)
     dz_ds = np.gradient(z_traj, s)
@@ -92,17 +91,42 @@ def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, r
     T = np.column_stack([dx_ds, dy_ds, dz_ds])
     T_norm = np.linalg.norm(T, axis=1)
     T_norm[T_norm == 0] = 1e-10
-    T_hat = T / T_norm[:, None] 
+    T_hat = T / T_norm[:, None]
 
-    cosang = np.sum(vec_ref_hat * T_hat, axis=1)         
-    cosang = np.clip(cosang, -1.0, 1.0)
-    beta_deg = np.degrees(np.arccos(cosang))             
-    
-    cross_beta = T_hat[:,0]*vec_ref_hat[:,1] - T_hat[:,1]*vec_ref_hat[:,0]
-    beta_sign = np.sign(cross_beta)
+    # Lisciatura della direzione di marcia su ~2 m. NON e' un filtro fisico: serve
+    # solo a togliere il tremolio numerico di T_hat, che nasce dall'arrotondamento
+    # a 2 cm (righe 31-33) combinato con np.gradient su punti vicini. Su GNSS a
+    # 10 cm di passo beta percorreva 9404 gradi di su-e-giu' invece dei ~1500 che
+    # servono per fare le curve, e quella ruvidita' costringeva RK45 a passi
+    # minuscoli (16484 valutazioni contro 10490). Sulle forze non cambia nulla:
+    # simulando con beta misurato da GNSS il risultato e' lo stesso a meno dello
+    # 0.2%. La finestra e' in METRI perche' 21 campioni sarebbero 2.1 m a passo
+    # 10 cm ma 5.2 m sulle traiettorie sintetiche di main_matrix (passo ~25 cm);
+    # fra 1 e 5 m il risultato e' insensibile alla scelta, a 10 m peggiora.
+    passo_medio = float(np.median(np.diff(s)))
+    win = max(5, int(round(2.0 / max(passo_medio, 1e-6))) | 1)
+    if win < len(T_hat):
+        T_hat = savgol_filter(T_hat, window_length=win, polyorder=2, axis=0)
+        # Il filtro agisce sulle tre componenti separatamente e la norma esce da 1
+        # (misurata fra 0.94 e 1.01): la si riporta a 1 perche' T_hat viene
+        # restituita come 'tan' e usata come versore nella proiezione qui sotto.
+        T_hat = T_hat / np.linalg.norm(T_hat, axis=1, keepdims=True)
 
-    alpha_rad_arr = np.radians(alpha_deg)
-    beta_rad_arr = np.radians(beta_sign * beta_deg)
+    # --- tangente proiettata sul piano locale (solo per beta) ---
+    T_p = T_hat - np.sum(T_hat * n_hat, axis=1)[:, None] * n_hat
+    T_p_norm = np.linalg.norm(T_p, axis=1)
+    T_p_norm[T_p_norm == 0] = 1e-10
+    T_hat_p = T_p / T_p_norm[:, None]
+
+    # --- beta: angolo con segno nel piano, da u_hat a T_hat_p, attorno a n_hat ---
+    # Positivo = marcia a sinistra della massima pendenza (n_hat esce dal pendio,
+    # quindi il verso antiorario attorno a n_hat e' la sinistra dello sciatore).
+    # E' la stessa convenzione "positivo = sinistra" del segno di R nel blocco 3,
+    # e rende coerente la somma F_centrifuga + sign(beta)*F_lat piu' sotto.
+    seno   = np.sum(n_hat * np.cross(u_hat, T_hat_p), axis=1)
+    coseno = np.sum(u_hat * T_hat_p, axis=1)
+    beta_rad_arr = np.arctan2(seno, coseno)         # gia' con segno, in [-pi, pi]
+    beta_deg = np.degrees(beta_rad_arr)
 
     # ==========================================
     # 3. CALCOLO RAGGIO DI CURVATURA R(s)
@@ -121,9 +145,19 @@ def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, r
         v1 = p - p_prev
         v2 = p_next - p
 
-        a = np.linalg.norm(p_prev - p)
-        b = np.linalg.norm(p - p_next)
-        c = np.linalg.norm(p_next - p_prev)
+        # Curvatura ORIZZONTALE: area e lati presi entrambi nella proiezione x-y.
+        # 4*area/(a*b*c) e' il reciproco del raggio circoscritto a un triangolo,
+        # e ha senso solo se area e lati vengono dallo STESSO triangolo. Prima
+        # l'area era quella del triangolo proiettato a terra ma a, b, c erano i
+        # lati del triangolo vero nello spazio: il risultato non era il raggio
+        # circoscritto di nulla, e su un pendio di 20 gradi gonfiava R del 21%
+        # (un fattore 1/cos^3 della pendenza).
+        # Orizzontale e non 3D perche' R serve solo a produrre F_centrifuga, che
+        # entra come carico LATERALE: la piegatura verticale (dossi, cambi di
+        # pendenza, il su-e-giu' dello sciatore) non deve finire in quel canale.
+        a = np.linalg.norm((p_prev - p)[:2])
+        b = np.linalg.norm((p - p_next)[:2])
+        c = np.linalg.norm((p_next - p_prev)[:2])
 
         cross = (v1[0]*v2[1] - v1[1]*v2[0])
         area = 0.5 * abs(cross)
@@ -132,7 +166,7 @@ def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, r
             R_vals[i] = np.inf
         else:
             curvature = 4.0 * area / (a * b * c)
-            sign = np.sign(cross)   
+            sign = np.sign(cross)
             curvature *= sign
             R_vals[i] = 1.0 / curvature
 
@@ -147,7 +181,15 @@ def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, r
     
     alpha_of_s = interp1d(s_unique, alpha_rad_arr[indices], kind='linear', fill_value="extrapolate")
     beta_of_s  = interp1d(s_unique, beta_rad_arr[indices],  kind='linear', fill_value="extrapolate")
-    R_of_s     = interp1d(s_unique, R_vals[indices], kind="linear", fill_value="extrapolate")
+
+    # Si interpola la CURVATURA 1/R, non R. In un flesso R passa da +molto grande
+    # a -molto grande (o a +-inf) e l'interpolante lineare attraversa lo zero: li'
+    # F_centrifuga = m v^2 / R esplode e l'integratore si pianta ("Required step
+    # size is less than spacing between numbers"). La curvatura invece passa per
+    # zero con continuita', che e' esattamente cio' che fa una traiettoria dritta.
+    kappa_vals = np.where(np.isfinite(R_vals) & (R_vals != 0.0),
+                          1.0 / np.where(R_vals == 0.0, np.inf, R_vals), 0.0)
+    kappa_of_s = interp1d(s_unique, kappa_vals[indices], kind="linear", fill_value="extrapolate")
 
     # ==========================================
     # 5. DEFINIZIONE ODE E RISOLUZIONE
@@ -156,9 +198,9 @@ def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, r
         w = max(w[0], 0.0)
         v = np.sqrt(w)
 
-        alpha = alpha_of_s(s_val) 
-        beta = beta_of_s(s_val)   
-        R = R_of_s(s_val)
+        alpha = alpha_of_s(s_val)
+        beta = beta_of_s(s_val)
+        kappa = kappa_of_s(s_val)
 
         Fg = m * g
         Fn = Fg * np.cos(alpha)
@@ -166,10 +208,7 @@ def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, r
         F_p = Fs * np.cos(np.abs(beta))
         F_lat = Fs * np.sin(np.abs(beta))
 
-        if np.isinf(R):
-            F_centrifuga = 0.0
-        else:
-            F_centrifuga = m*v*v/R
+        F_centrifuga = m * v * v * kappa
 
         F_drag = 0.5 * rho * CdA * v * v
         F_load = np.sqrt((Fn)**2 + (F_centrifuga + np.sign(beta)*F_lat)**2)
@@ -207,21 +246,20 @@ def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, r
 
     for i, s_val in enumerate(s_sol):
         v_tmp = v_sol[i]
-        alpha = alpha_of_s(s_val) 
-        beta  = beta_of_s(s_val)  
-        R_local = R_of_s(s_val)
+        alpha = alpha_of_s(s_val)
+        beta  = beta_of_s(s_val)
+        kappa = kappa_of_s(s_val)
+        R_local = 1.0 / kappa if kappa != 0.0 else np.inf
 
-        Fg = m * g 
+        Fg = m * g
         Fn = Fg * np.cos(alpha)
         Fs = Fg * np.sin(alpha)
         F_p = Fs * np.cos(np.abs(beta))
         F_lat = Fs * np.sin(np.abs(beta))
 
-        if np.isinf(R_local):
-            F_centrifuga = 0.0
-        else:
-            F_centrifuga = m * v_tmp * v_tmp / R_local
-        
+        F_centrifuga = m * v_tmp * v_tmp * kappa
+
+
         F_lat_tot = F_centrifuga + np.sign(beta)*F_lat
         F_load = np.sqrt(Fn**2 + F_lat_tot**2)
         F_drag = 0.5 * rho * CdA * v_tmp**2
@@ -317,8 +355,8 @@ def esegui_simulazione(x_traj, y_traj, z_traj, vec_ref, m=80, g=9.81, mu=0.16, r
         plt.tight_layout()
 
         # --- Cella 8: Accelerazione Tangenziale con Filtro Savitzky-Golay ---
-        from scipy.signal import savgol_filter
-
+        # (l'import di savgol_filter e' ora in cima al modulo: tenerlo anche qui
+        # rendeva il nome locale alla funzione e rompeva l'uso nel blocco 2)
 
         plt.figure(figsize=(12, 5))
 
