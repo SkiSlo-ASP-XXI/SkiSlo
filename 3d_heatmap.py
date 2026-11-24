@@ -1123,12 +1123,12 @@ def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gate
     sx = (W - 1) / (maxX - minX + 1e-9)   # Est [m]  -> column (Est) index scale
     sy = (H - 1) / (maxY - minY + 1e-9)   # Nord [m] -> row (Nord) index scale
     t = np.array([-20, 20])   # half-length of each drawn tangent, in meters
-    for nord, est, angle in tangents:
-        est_idx  = (est  - minX) * sx
-        nord_idx = (nord - minY) * sy
-        # displayed image is riverMatrix.T: plot-x = Nord index, plot-y = Est index
-        plt.plot(nord_idx + np.sin(angle) * sy * t, est_idx  + np.cos(angle) * sx * t, color='blue', linewidth=1.5)
-        plt.plot(nord_idx, est_idx, marker='o', color='blue', markersize=4)
+    # for nord, est, angle in tangents:
+    #     est_idx  = (est  - minX) * sx
+    #     nord_idx = (nord - minY) * sy
+    #     # displayed image is riverMatrix.T: plot-x = Nord index, plot-y = Est index
+    #     plt.plot(nord_idx + np.sin(angle) * sy * t, est_idx  + np.cos(angle) * sx * t, color='blue', linewidth=1.5)
+    #     plt.plot(nord_idx, est_idx, marker='o', color='blue', markersize=4)
 
 
     # Overlay the slope borders recovered from the --path_to_las point cloud.
