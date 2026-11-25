@@ -926,6 +926,8 @@ def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gate
                         help="Vertical exaggeration of the 3D plot (1 = true metric aspect).")
     parser.add_argument("--pyvista", action='store_true',
                         help="Also open the interactive pyvista viewer (needs pyvista installed).")
+    parser.add_argument("--showPlots", action='store_true',
+                        help="Show the matplotlib figures interactively (they are always saved to PNG).")
 
     #########################
     coeffs = [
@@ -934,8 +936,10 @@ def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gate
         (0,1,0,0),
         (1,0,0,0),
         (0.25,0.25,0.25,0.25),
-        (0.5,0,0.5,0),
-        (1/6,1/3,1/3,1/6)
+        (0,0.5,0.5,0),
+        (1/6,1/3,1/3,1/6),
+        (1/3,1/3,1/3,0),
+        (1/5,2/5,2/5,0),
     ]
     #########################
 
@@ -988,8 +992,8 @@ def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gate
     # (ALPHA_METHOD). Gli altri metodi restano in alphas_all solo per il confronto.
     alphas = [a[ALPHA_METHOD] for a in alphas_all]
 
-    plot_alpha_comparison(alphas_all)   # TEMPORANEO
-    plot_stop_points(listDf, risSim)
+    plot_alpha_comparison(alphas_all, save_path=os.path.join(args.output, "alpha_comparison_3d.png"))   # TEMPORANEO
+    plot_stop_points(listDf, risSim, save_path=os.path.join(args.output, "stop_points_3d.png"))
 
     haz_bump_coeffs = []
     
@@ -1047,6 +1051,7 @@ def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gate
     # for alpha in alphas_der:
     for weight in coeffs:
         outputdir = args.output + f"/simulated_trajectories/coeffs_{weight[0]}_{weight[1]}_{weight[2]}_{weight[3]}"
+        os.makedirs(outputdir, exist_ok=True)
         haz_coeff = weight[0]* np.array(haz_bump_coeffs) + weight[1] * np.array(haz_coeff_sim) + weight[2] * np.array(haz_coeff_incl) + weight[3] * np.array(haz_coeff_depth)
 
         # Create a river matrix with the cells of 1 meter x 1 meter and fill it with the hazard coefficients (for visualization purposes)
@@ -1164,12 +1169,12 @@ def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gate
                     edgecolors='black', linewidths=0.5, zorder=6, label='End')
         plt.legend(loc='best')
 
-        plt.savefig("river_matrix_3d.png", bbox_inches='tight', format='png')
+        plt.savefig(os.path.join(outputdir, "river_matrix_3d.png"), bbox_inches='tight', format='png')
 
         plt.figure(figsize=(8, 8))
         plt.imshow(np.ma.masked_equal(reliabilityMatrix.T, 0), cmap=cmap, origin='lower')
         plt.colorbar(label='Reliability')
-        plt.savefig("reliability_matrix_3d.png", bbox_inches='tight', format='png')
+        plt.savefig(os.path.join(outputdir, "reliability_matrix_3d.png"), bbox_inches='tight', format='png')
 
         # The max-hazard cell is pure numpy and the 3D figure marks it, so it is computed
         # here rather than after the (blocking) plt.show() below.
@@ -1205,10 +1210,14 @@ def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gate
 
         plot_hazard_surface_3d(dem_x, dem_y, dem_z, haz_grid, covered, listDf, real_gates,
                             (max_HC_x_continous, max_HC_y_continous), desc_vect,
-                            z_exag=args.z_exag, mode=args.hazard_fill)
+                            z_exag=args.z_exag, mode=args.hazard_fill,
+                            save_path=os.path.join(outputdir, "river_matrix_surface_3d.png"))
 
         #show results
-        plt.show()
+        if args.showPlots:
+            plt.show()
+        else:
+            plt.close('all')
 
         if args.pyvista:
             view_pyvista_3d(dem_x, dem_y, dem_z, haz_grid, listDf)
@@ -1288,8 +1297,11 @@ def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gate
         ax.set_title(f"Post-fall slides from the max-hazard cell (haz={haz_coeff[max_HC]:.3f})")
         ax.set_aspect('equal', adjustable='datalim')
         ax.grid(True, ls='--', alpha=0.4)
-        fig.savefig("fall_paths_3d.png", bbox_inches='tight', format='png')
-        plt.show()
+        fig.savefig(os.path.join(outputdir, "fall_paths_3d.png"), bbox_inches='tight', format='png')
+        if args.showPlots:
+            plt.show()
+        else:
+            plt.close('all')
 
         #save the results to a CSV file
         results_df = pd.DataFrame({
@@ -1299,6 +1311,7 @@ def main(num_points:int=3_000): #To call main paste: python 3d_heatmap.py --gate
             "Nord [m]": np.concatenate([df["Nord [m]"].values for df in listDf]),
             "Quota Orto. [m]": np.concatenate([df["Quota Orto. [m]"].values for df in listDf]),
             "Hazard Coefficient": np.concatenate(haz_coeff),
+            "Simulation Coefficient": np.concatenate(haz_coeff_sim),
             "Bump Coefficient": np.concatenate(haz_bump_coeffs),
             "Inclination Coefficient": np.concatenate(haz_coeff_incl),
             "Snow Depth Coefficient": np.concatenate(haz_coeff_depth)
